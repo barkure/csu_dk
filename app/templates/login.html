@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}登录 · 妙妙道具{% endblock %}
+{% block body_class %}center{% endblock %}
+{% block content %}
+<main class="card login">
+  <h1>妙妙道具</h1>
+  <p class="muted">登录后可托管某大学账号并自动打卡</p>
+  {% include "partials/login_form.html" %}
+</main>
+<script src="/static/login.js"></script>
+{% endblock %}

@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}妙妙道具{% endblock %}</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js"></script>
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% block content %}{% endblock %}
+</body>
+</html>

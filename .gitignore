@@ -1,0 +1,19 @@
+# 依赖
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache
+
+# 本地配置与数据
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+*.key
+*.pem
+
+# 系统
+.DS_Store
+*.log

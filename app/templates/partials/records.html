@@ -1,0 +1,25 @@
+<section class="card{% if not records %} hidden{% endif %}" id="records-card">
+  <button type="button" id="close-records" title="关闭" aria-label="关闭"
+          hx-get="/ui/records/close" hx-target="#records-card" hx-swap="outerHTML">
+    <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      <path d="M1 1 13 13M13 1 1 13" stroke="currentColor" stroke-width="2"/>
+    </svg>
+  </button>
+  <h2>历史记录 <span class="mono" id="records-title">{{ account.csu_username if account else '' }}</span></h2>
+  <div class="table-wrap">
+    <table id="records">
+      <thead><tr><th>时间</th><th>结果</th><th>说明</th></tr></thead>
+      <tbody>
+      {% for record in records %}
+        <tr>
+          <td class="mono"><span class="ts-full">{{ fmt_full(record.run_at) }}</span><span class="ts-short">{{ fmt(record.run_at) }}</span></td>
+          <td><span class="badge {{ status_class(record.status) }}">{{ status_label(record.status, record.message) }}</span></td>
+          <td>{{ record.message or '' }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="3" class="muted">暂无历史记录</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>

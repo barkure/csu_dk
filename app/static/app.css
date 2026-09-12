@@ -1,0 +1,419 @@
+/* ============================================================
+   纯黑白高对比风格：只有黑、白、灰阶与线条。
+   无圆角、无阴影、无彩色；结构用 2px 实线，内部用 1px 细线。
+   ============================================================ */
+
+:root {
+  --ink: #000;
+  --paper: #fff;
+  --muted: #666;        /* 灰阶，非彩色 */
+  --hair: #000;         /* 粗结构线 */
+  --thin: #999;         /* 细网格线 */
+  --shadow-ink: #000;
+  --focus: #1a73e8;     /* 聚焦蓝：唯一的强调色 */
+  --danger: #c62828;    /* 危险红：只用于删除与失败状态 */
+  --ok: #1b7a3f;        /* 成功绿：只用于"打卡成功" */
+  --wash: #ededed;      /* 极浅灰底：只给「管理」这类需要一点点击暗示的按钮 */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #fff;
+    --paper: #000;
+    --muted: #9a9a9a;
+    --hair: #fff;
+    --thin: #6b6b6b;
+    --focus: #6ea8fe;
+    --danger: #ff6b6b;
+    --ok: #4ec97a;
+    --wash: #262626;
+  }
+}
+
+* { box-sizing: border-box; }
+
+::selection { background: var(--ink); color: var(--paper); }
+
+body {
+  margin: 0;
+  padding: 0 20px 64px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.55 ui-sans-serif, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body.center {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 24px;
+}
+
+/* ---------- 文字 ---------- */
+
+h1 {
+  font-size: 22px; margin: 0; font-weight: 700;
+  letter-spacing: .18em; text-transform: uppercase;
+}
+
+h2 {
+  font-size: 14px; margin: 0 0 18px; font-weight: 700;
+  letter-spacing: .14em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+
+/* 等宽字体要补一号字号：Menlo 的字面（x-height/cap）比无衬线矮，
+   同样是 14px，学号和坐标看起来会比其他列小一圈。 */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; }
+.muted { color: var(--muted); }
+
+/* ---------- 页头 ---------- */
+
+header {
+  display: flex; flex-wrap: wrap; gap: 14px;
+  align-items: baseline; justify-content: space-between;
+  max-width: 1040px; margin: 28px auto 36px;
+}
+
+.status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+
+/* ---------- 右上角：邮箱 + 退出登录按钮（不做下拉菜单了，直接摆按钮） ---------- */
+
+#who-email {
+  color: var(--muted);
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* 文字按钮：不要框、不要底色、不做大写间距 —— 页头的「登出」、账号行的「管理」用它。
+   悬停时变墨色并加下划线，点击感靠文字本身表达，不再多画一个方框。 */
+button.plain {
+  background: none; border: 0; margin: 0; padding: 4px 2px;
+  color: var(--muted); cursor: pointer;
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0; text-transform: none;
+}
+/* 「管理」按钮加一层极浅灰底：它是每行唯一的入口，纯文字容易被当成普通标签。
+   其余 .plain（登出、面板里的操作）保持无底色 —— 那是有意为之。 */
+button.plain.manage {
+  background: var(--wash); padding: 4px 10px;
+  color: var(--ink);   /* 有底色了，文字就别再弱化成灰色 */
+}
+button.plain.manage:hover:not(:disabled) { background: var(--wash); color: var(--ink); }
+
+/* 下划线往下让 2px：汉字带下划线时贴太近会碰到字的下缘 */
+button.plain:hover:not(:disabled) {
+  background: none; color: var(--ink);
+  text-decoration: underline; text-underline-offset: 2px;
+}
+button.plain:active:not(:disabled) { background: none; color: var(--ink); }
+
+/* 「删除账号」保留红色 —— 红色只用于删除与失败。
+   注意必须连背景一起压：全局的 button.danger:hover 会铺一层红底，
+   而这里又把文字改回红色，两者叠加就是"红底红字"，点上去等于消失。 */
+button.plain.danger { border: 0; background: none; color: var(--danger); }
+button.plain.danger:hover:not(:disabled),
+button.plain.danger:active:not(:disabled) { background: none; color: var(--danger); }
+
+/* 标题旁的学号：这里本来就该比标题小一点 */
+#records-title { font-size: 13px; }
+/* 时间两套写法：宽屏带年份，窄屏省掉年份（390px 下年份会把日期折成两截）。
+   默认那条必须写在下面的媒体查询之前，否则同权重会反过来盖掉窄屏规则。 */
+.ts-short { display: none; }
+
+/* 历史记录卡片的关闭：右上角一个叉（纯文字按钮，不用框） */
+#records-card { position: relative; }
+#close-records {
+  position: absolute; top: 10px; right: 12px;
+  background: none; margin: 0; padding: 6px 10px;
+  /* 边框一直存在但透明：悬停时只是把它显示出来，不会因为加边框而尺寸跳动 */
+  border: 2px solid transparent;
+  color: var(--ink); cursor: pointer;
+  /* 用 flex 把图形摆正中央 —— 叉是 SVG 画的（不依赖字体），这样才是精确居中：
+     用字体里的 × 时，字符墨迹是按数学轴排的，在行盒里天然偏上，怎么调 padding 都差一点 */
+  display: flex; align-items: center; justify-content: center;
+  line-height: 0;
+}
+#close-records svg { display: block; }
+/* 鼠标放上去出现一个描边框，提示这是个可以点的按钮 */
+#close-records:hover:not(:disabled) { background: none; color: var(--ink); border-color: var(--hair); }
+#close-records:active:not(:disabled) { background: none; color: var(--ink); border-color: var(--hair); }
+
+/* ---------- 面板：粗黑边框 ---------- */
+
+.card {
+  max-width: 1040px; margin: 0 auto 22px;
+  background: var(--paper);
+  border: 2px solid var(--hair);
+  padding: 22px 24px;
+}
+
+.card.login { width: 100%; max-width: 420px; padding: 28px 26px; }
+
+/* 登录卡片里的标题/说明/消息也拉开些距离 */
+.card.login h1 { margin-bottom: 10px; }
+.card.login > .muted { margin: 0 0 22px; font-size: 13px; }
+.card.login .msg { margin-top: 16px; }
+
+/* ---------- 表单 ---------- */
+
+/* 四个输入框均分整行剩余空间，按钮自然落在最右侧且间距统一 */
+.fieldrow {
+  display: flex; flex-wrap: wrap; gap: 16px 20px; align-items: flex-end;
+}
+.fieldrow > label, .fieldrow > .field { flex: 1 1 168px; min-width: 126px; }
+.fieldrow > button { flex: 0 0 auto; }
+
+/* 输入框与按钮等高（否则按钮比输入框矮一截，底边对齐时看着不齐） */
+.fieldrow input { height: 45px; }
+
+/* 窄屏（手机/小平板）的两处调整 */
+@media (max-width: 720px) {
+  /* 页头与第一个卡片之间不用桌面那么大的留白 */
+  header { margin-bottom: 26px; }
+  /* 一行放不下输入框 + 按钮时，按钮独占一整行，更好点按 */
+  .fieldrow > button { flex: none; width: 100%; }
+
+  /* 账号表改成一行一个字段的卡片，省掉左右滑动 */
+  .table-wrap { overflow-x: visible; }
+  table.accounts thead { display: none; }
+  table.accounts tr.account { display: block; padding: 12px 0 2px; border-bottom: 2px solid var(--ink); }
+  /* 展开时：账号行与面板之间用细线，粗线留给面板下方收起整个账号块 */
+  table.accounts tr.account.is-open { border-bottom: 1px solid var(--thin); }
+  table.accounts tr.account td {
+    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    padding: 5px 0; border: 0; white-space: normal;
+  }
+  /* 标签由 data-label 提供，和值左右分开。
+     标签要显式指定字体与字号：否则会继承单元格的字体（学号/坐标是等宽），
+     八个标签就会两种字体、且和值一样大，看不出层次。 */
+  table.accounts tr.account td[data-label]::before {
+    content: attr(data-label); flex: 0 0 auto;
+    color: var(--muted);
+    font-family: ui-sans-serif, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+  }
+  /* 最后一格是「管理」按钮：没有标签，space-between 会把它推到左边 → 改成靠右 */
+  table.accounts tr.account td:last-child { justify-content: flex-end; }
+  /* 手机上点按目标别太小（文字按钮本来只有 30px 宽） */
+  table.accounts .plain { padding: 6px 10px; }
+  table.accounts tr.actions-row { display: block; }
+  table.accounts tr.actions-row > td { display: block; padding: 10px 0 14px; border-bottom: 2px solid var(--ink); }
+  table.accounts tr.actions-row .actions { flex-wrap: wrap; }
+
+  /* 历史记录：还是三列列表，只是时间换成「月-日 时:分」（宽度不够，年份挤不下会折行折散） */
+  #records th, #records td { white-space: normal; }
+  /* 时间排成上下两行（月-日 / 时:分）：挤成一行要占掉近 90px，说明列就没地方了。
+     width: 1% 让这一列收缩到最小内容宽度，空格处自然断行。 */
+  #records td:nth-child(1) { white-space: normal; width: 1%; }
+  .ts-full { display: none; }
+  .ts-short { display: inline; }
+}
+.fieldrow > button {
+  height: 45px; padding: 0 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.fieldblock > .msg { margin-top: 10px; }
+
+/* 数字输入框去掉上下小箭头 */
+input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none; appearance: none;
+  margin: 0;
+}
+
+/* 表单内元素统一间距（登录页的“密码/验证码/按钮”挨太近就是少了这条）
+   用 grid gap 而非 margin，避免和 .actions 自带的上边距叠加 */
+form {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+form .actions { margin-top: 0; }
+
+.grid {
+  display: grid; gap: 18px 22px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+label, .field {
+  display: flex; flex-direction: column; gap: 8px;
+  font-size: 12px; font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase;
+}
+/* 标签文字 + 括号提示要保持同一行（外层是纵向 flex，所以包一层）。
+   不用 gap：括号要贴着标签，中间多一个 2px 的缝看着就像多了个空格 */
+label > .label-text, .field > .label-text { display: flex; align-items: baseline; }
+
+/* 标签行里的内层 label 只是“点了聚焦输入框”的文字，别再叠一层纵向 flex。
+   按钮不能放进 <label>：Chrome 会把 label 内任意位置的 hover 算到这个 label 下的
+   所有控件上 —— 点右侧的 ⓘ，旁边的「点击使用当前位置」也会跟着进 hover 态。
+   所以标签用 for= 关联输入框，按钮留在 label 外面。 */
+.label-text > label { display: inline; }
+
+/* 经纬度标签后的括号提示：点它就是"使用当前定位" —— 省掉一个占位按钮。
+   用文字按钮那套（灰字、悬停变黑加下划线），字号比标签略小，不抢标签的视觉重量。
+   左移 1.4px 是为了抵消标签本身的 letter-spacing(.12em×12px=1.44px) —— 它会给
+   最后一个字后面也留一份间距，那样括号和"经纬度"之间又会多出一点空。 */
+/* 经纬度标签后的 [点击使用当前位置]：方括号本身就是"这里可以点"的提示，
+   所以平时不带下划线；鼠标放上去才加（沿用 button.plain 的悬停规则）。 */
+button.pick { font-size: 11px; letter-spacing: 0; margin-left: -1.4px; }
+
+/* 经纬度标签行最右侧的说明图标：点了展开"去哪拿精确坐标"。
+   margin-left: auto 把它顶到这一行的最右边，不打断「经纬度 [点击使用当前位置]」这一组。 */
+button.hint-toggle {
+  margin-left: auto; padding: 0; border: 0; background: none;
+  color: var(--muted); cursor: pointer; line-height: 0;
+}
+button.hint-toggle svg { display: block; }
+button.hint-toggle:hover, button.hint-toggle[aria-expanded="true"] { color: var(--ink); }
+
+.hint {
+  font-size: 13px; line-height: 1.6; color: var(--muted);
+  margin: 8px 0 0;
+}
+.hint a { color: var(--ink); }
+
+/* ---------- 按钮行 ---------- */
+
+.row { display: flex; gap: 10px; }
+.row > input { flex: 1 1 auto; min-width: 0; }
+.row > button { flex: none; }
+
+input, select, textarea {
+  font: 15px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--ink); background: var(--paper);
+  border: 2px solid var(--hair);
+  border-radius: 0; padding: 10px 12px; width: 100%;
+}
+input::placeholder, textarea::placeholder { color: var(--muted); }
+/* 聚焦：不加外框，直接把边框变蓝 */
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--focus);
+}
+input[readonly] { color: var(--muted); border-style: dashed; }
+
+input[type="checkbox"] {
+  appearance: none; width: 20px; height: 20px; padding: 0;
+  border: 2px solid var(--hair); flex: none;
+}
+input[type="checkbox"]:checked {
+  background: var(--ink);
+  box-shadow: inset 0 0 0 3px var(--paper);
+}
+input[type="checkbox"]:focus-visible {
+  outline: 3px solid var(--focus); outline-offset: 2px;
+}
+
+/* ---------- 按钮：实心为主，描边为辅 ---------- */
+
+button {
+  font: 700 13px/1 ui-sans-serif, -apple-system, "PingFang SC", sans-serif;
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--paper); background: var(--ink);
+  border: 2px solid var(--hair); border-radius: 0;
+  padding: 11px 18px; cursor: pointer; white-space: nowrap;
+}
+button:hover:not(:disabled) { background: var(--paper); color: var(--ink); }
+button:active:not(:disabled) { background: var(--ink); color: var(--paper); }
+button:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+button:disabled { color: var(--muted); background: var(--paper); border-color: var(--muted); cursor: default; }
+
+button.ghost { background: var(--paper); color: var(--ink); }
+button.ghost:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+
+/* 危险操作：双线边框 + ✕ 标记，仍为黑白 */
+button.danger {
+  background: var(--paper); color: var(--danger);
+  border: 2px solid var(--danger);
+}
+button.danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+
+.actions {
+  /* 全是文字按钮了，间距要放开一点，否则挤成一坨 */
+  display: flex; align-items: center; gap: 6px 22px; flex-wrap: wrap;
+  justify-content: flex-end;      /* 靠右：正好排在上方「管理」按钮那一列下面 */
+  margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--thin);
+}
+
+/* ---------- 徽标：实心 / 描边 / 警示 ---------- */
+
+.badge {
+  display: inline-block;
+  font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .08em; text-transform: uppercase;
+  padding: 5px 9px; border: 1px solid var(--hair);
+  background: var(--paper); color: var(--ink);
+}
+/* 打卡成功：绿描边（与失败的红描边同一形态，一眼分清"成了 / 没成 / 还没打"） */
+.badge.ok { background: var(--paper); color: var(--ok); border: 2px solid var(--ok); }
+.badge.err {
+  background: var(--paper); color: var(--danger);
+  border: 2px solid var(--danger);
+}
+
+/* ---------- 自动打卡：可打勾的方框 ----------
+   未勾选 = 白底黑框、勾不可见；勾选 = 黑底白勾。
+   勾用 SVG 画（不依赖字体，形状和居中都可控）。
+   只有方框本身可点（inline-flex 才能被 td 的 text-align:center 居中）。 */
+button.check {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0;
+  border: 2px solid var(--hair); background: var(--paper);
+  color: var(--paper);            /* 未勾选时勾的颜色=底色，看不见 */
+  cursor: pointer; vertical-align: middle;
+}
+button.check:hover:not(:disabled) { border-color: var(--ink); background: var(--paper); }
+button.check[aria-checked="true"] { background: var(--ink); color: var(--paper); }
+button.check[aria-checked="true"]:hover:not(:disabled) { background: var(--ink); }
+button.check svg { display: block; }
+
+/* ---------- 提示条：粗左边线 + 加粗文字 ---------- */
+
+.banner {
+  max-width: 1040px; margin: 0 auto 22px;
+  border: 2px solid var(--danger);
+  border-left-width: 12px;   /* 警示条 */
+  padding: 16px 20px;
+  font-weight: 700;
+}
+
+/* ---------- 账号列表：多账号共用一行表头，各账号一行数据 ---------- */
+
+/* 表格里的文字不换行，窄屏交给 .table-wrap 横向滚动（居中已由 th/td 基础样式负责） */
+.accounts th, .accounts td { white-space: nowrap; }
+.accounts td { vertical-align: middle; }
+/* 展开的操作行：不再自己画上边线（账号行那格已有下边线），
+   但按钮要和那条线留出间距，否则紧贴着很难看 */
+.actions-row > td { padding: 14px 12px; border-bottom: 1px solid var(--thin); }
+.actions-row .actions { border-top: 0; margin: 0; padding: 0; }
+/* 操作结果：独占一行、字号大一点、颜色用墨色（不是弱化的灰），保证一眼能看到 */
+.actions-row .msg { margin-top: 12px; font-size: 14px; color: var(--ink); }
+
+/* ---------- 表格：粗表头线 ---------- */
+
+.table-wrap { overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th {
+  /* 表头与数据一律居中：两处表格（账号列表 / 历史记录）看起来才是一套 */
+  text-align: center; padding: 10px 12px;
+  font: 700 12px/1.2 ui-sans-serif, sans-serif;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+  border-bottom: 2px solid var(--hair);
+}
+td { text-align: center; padding: 10px 12px; border-bottom: 1px solid var(--thin); }
+
+/* ---------- 提示文字 ---------- */
+
+.msg { font-size: 13px; color: var(--muted); min-height: 20px; margin: 0; }
+/* 没有内容时不占位——否则表单里会多出一堆空白行 */
+.msg:empty { display: none; }
+.msg.ok { color: var(--ink); }
+.msg.err { color: var(--danger); font-weight: 700; }
+/* 表格里的状态文字：绿 = 一切正常（已登录），红 = 需要你动手（密码失效、打卡失败） */
+b.err, td.err { color: var(--danger); }
+td.ok { color: var(--ok); }
+
+.hidden { display: none !important; }
+

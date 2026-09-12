@@ -1,0 +1,38 @@
+[project]
+name = "csu-dk"
+version = "0.1.0"
+description = "中南大学妙妙道具：邮箱验证码登录，托管学号密码，每天随机时刻自动打卡"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "requests>=2.32",
+    "pycryptodome>=3.20",
+    "pydantic-settings>=2.15.0",
+    "email-validator>=2.3.0",
+    "beautifulsoup4>=4.15.0",
+    "limits>=5.8.0",
+    "apscheduler>=3.11.3",
+    "structlog>=26.1.0",
+    "jinja2>=3.1.6",
+    "python-multipart>=0.0.32",
+    "tencentcloud-sdk-python-ses>=3.1.135",
+    "ddddocr>=1.6.1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.14"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+# 默认规则 + 导入排序/常见坑/简化/现代化/datetime 误用
+select = ["E", "F", "W", "I", "B", "C4", "SIM", "UP", "RUF", "DTZ", "BLE"]
+# 中文全角标点在字符串/注释里是正常写法，不该报警
+ignore = ["RUF001", "RUF002", "RUF003"]
