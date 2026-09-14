@@ -36,7 +36,6 @@ def hash_login_code(email: str, code: str) -> str:
 
 limiters = {
     "request_ip": SlidingWindow(cfg.config.request_ip.window_ms, cfg.config.request_ip.max),
-    "request_global": SlidingWindow(cfg.config.request_global.window_ms, cfg.config.request_global.max),
     "verify_ip": SlidingWindow(cfg.config.verify_ip.window_ms, cfg.config.verify_ip.max),
 }
 
@@ -73,11 +72,6 @@ def _enforce(limiter: SlidingWindow, key: str, message: str) -> None:
 
 
 def request_login_code(email: object, ip: str = "unknown") -> dict:
-    """顺序：白名单 → 来源 IP → 邮箱冷却 → 邮箱每日上限 → 全局额度。
-
-    全局额度必须放最后：它只统计"真的会去发邮件"的请求，否则拿处于冷却中的邮箱
-    狂刷就能把额度耗光，所有人都收不到验证码。
-    """
     normalized = normalize_email(email)
     now = local_now(cfg.config.tz)
 
@@ -94,8 +88,6 @@ def request_login_code(email: object, ip: str = "unknown") -> dict:
     day_ago = to_local_iso(now - timedelta(days=1))
     if db.count_recent_codes(normalized, day_ago) >= cfg.config.email_daily_max:
         raise RateLimitError(f"该邮箱 24 小时内最多请求 {cfg.config.email_daily_max} 次验证码，请稍后再试", 3600)
-
-    _enforce(limiters["request_global"], "global", "今日验证码发送量已达上限")
 
     code = f"{secrets.randbelow(1_000_000):06d}"
     code_id = db.insert_login_code(

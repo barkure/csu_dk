@@ -4,7 +4,7 @@
   <div class="table-wrap">
     <table class="accounts">
       <thead>
-        <tr><th>学号</th><th>账号状态</th><th>自动打卡</th><th>下次执行时刻</th><th>今日结果</th><th>坐标</th><th>楼栋</th><th></th></tr>
+        <tr><th>学号</th><th>账号状态</th><th>自动打卡</th><th>今日结果</th><th>楼栋</th><th></th></tr>
       </thead>
       <tbody>
       {% for item in rows %}
@@ -22,10 +22,8 @@
               </svg>
             </button>
           </td>
-          <td data-label="下次执行">{{ item.next }}</td>
           <td class="{{ item.today.cls }}" data-label="今日结果">{{ item.today.label }}</td>
-          <td class="mono" data-label="坐标">{{ item.coords }}</td>
-          <td data-label="楼栋"{% if not a.dkdz %} class="muted" title="楼栋名由学校按坐标返回；学校只在打卡时段内返回它"{% endif %}>{{ a.dkdz or '—' }}</td>
+          <td data-label="楼栋"{% if not a.dkdz %} class="muted" title="学校按你申报的地址返回的楼栋名，首次打卡时自动补上"{% endif %}>{{ a.dkdz or '—' }}</td>
           <td class="right">
             <button class="plain manage" aria-expanded="{{ 'true' if open_id == a.id else 'false' }}"
                     hx-get="/ui/accounts?open={{ '' if open_id == a.id else a.id }}" hx-target="#accounts-card" hx-swap="outerHTML">
@@ -35,7 +33,7 @@
         </tr>
         {% if open_id == a.id %}
         <tr class="actions-row" data-role="actions">
-          <td colspan="8">
+          <td colspan="6">
             <div class="actions">
               <button class="plain" hx-post="/ui/accounts/{{ a.id }}/run" hx-target="#accounts-card" hx-swap="outerHTML">立即打卡</button>
               <button class="plain" hx-get="/ui/form?edit={{ a.id }}" hx-target="#form-card"
@@ -51,7 +49,7 @@
         </tr>
         {% endif %}
       {% else %}
-        <tr><td colspan="8" class="muted">还没有打卡账号，在上面添加一个。</td></tr>
+        <tr><td colspan="6" class="muted">还没有打卡账号，在上面添加一个。</td></tr>
       {% endfor %}
       </tbody>
     </table>

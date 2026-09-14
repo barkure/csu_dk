@@ -1,5 +1,5 @@
-// 发码后的倒计时。纯展示：真正的冷却由服务端强制（再点会收到 429 与剩余秒数）。
-// htmx 换进来的片段不会执行内联脚本，所以用事件监听统一处理。
+
+
 function startCountdown(button) {
   let left = Number(button.dataset.cooldown || 0);
   if (!left || button.dataset.counting) return;

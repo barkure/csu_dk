@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import requests
 
+from .. import config as cfg
 from .cas import UA, cas_login
 from .des import des_encrypt, generate_casual
 
@@ -37,7 +38,7 @@ def dump_cookies(session: requests.Session) -> str:
 
 
 def load_cookies(session: requests.Session, raw: str | None) -> None:
-    """解析失败或不是本格式（比如早期只存 {name: value}）就当作没有登录态，下次自动重登。"""
+    """忽略无效 Cookie 数据。"""
     if not raw:
         return
     try:
@@ -71,10 +72,18 @@ def load_cookies(session: requests.Session, raw: str | None) -> None:
         ))
 
 
+def new_session() -> requests.Session:
+    session = requests.Session()
+    proxy = (cfg.config.outbound_proxy or "").strip()
+    if proxy:
+        session.proxies.update({"http": proxy, "https": proxy})
+    return session
+
+
 class ZhxgClient:
     def __init__(self, session: requests.Session | None = None, casual: str | None = None,
                  token: str | None = None, cookies: str | None = None):
-        self.session = session or requests.Session()
+        self.session = session or new_session()
         if cookies:
             load_cookies(self.session, cookies)
         self.casual = casual or generate_casual(16)

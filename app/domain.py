@@ -1,7 +1,4 @@
-"""领域类型：状态、故障类型、触发方式，以及数据库行与学校接口返回值的形状。
-
-字面量散在各处时，改一个值要全仓库找；这里集中定义，出错在类型检查阶段就能看见。
-"""
+"""领域类型。"""
 from __future__ import annotations
 
 from enum import StrEnum
@@ -20,7 +17,7 @@ class AuthError(StrEnum):
 class CheckinStatus(StrEnum):
     SUCCESS = "success"
     SKIPPED = "skipped"      # 学校回"今日已打卡"
-    WAITING = "waiting"      # 还没到打卡时段
+    WAITING = "waiting"
     FAILED = "failed"
 
 
@@ -37,8 +34,6 @@ class AccountRow(TypedDict):
     csu_username: str
     password_enc: str
     enabled: int
-    window_start: str
-    window_end: str
     jd: float | None
     wd: float | None
     dkdz: str
@@ -46,11 +41,9 @@ class AccountRow(TypedDict):
     token: str | None
     cookies: str | None
     token_at: str | None
-    next_run_at: str | None
     last_run_at: str | None
     last_status: str | None
     last_message: str | None
-    needs_reauth: int
     auth_error: str
     created_at: str
     updated_at: str
@@ -72,8 +65,6 @@ class RecordRow(TypedDict):
     message: str | None
     dksj: str | None
 
-
-# ---------- 学校接口的返回形状（只声明我们用到的字段）----------
 
 class DkStatusData(TypedDict, total=False):
     """智慧学工 dkStatus 的 data。"""
@@ -103,15 +94,6 @@ class SchoolResponse(TypedDict, total=False):
     data: dict
 
 
-class WindowPlan(TypedDict):
-    """添加账号时"提交即验证"探测到的信息。"""
-
-    location: LocationData
-    address: str
-    session: SessionPayload
-    window: tuple[str | None, str | None]
-
-
 class SessionPayload(TypedDict):
     token: str
     casual: str | None
@@ -122,3 +104,4 @@ class CheckinResult(TypedDict):
     status: str
     message: str
     dksj: NotRequired[str | None]
+    paused_until: NotRequired[float]

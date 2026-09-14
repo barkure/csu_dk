@@ -12,18 +12,25 @@
                  value="{{ editing.csu_username if editing else '' }}" {% if editing %}readonly{% endif %}>
         </label>
         <label>密码
-          <input name="password" type="password" autocomplete="new-password" {% if not editing %}required{% endif %}>
+          <span class="secret">
+            <input name="password" type="password" autocomplete="new-password" {% if not editing %}required{% endif %}>
+            <button type="button" class="reveal" data-reveal aria-pressed="false"
+                    aria-label="显示密码" title="显示密码">
+              <svg class="eye-on" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" fill="none"
+                   stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1.5 9S4.2 3.8 9 3.8 16.5 9 16.5 9 13.8 14.2 9 14.2 1.5 9 1.5 9Z"/>
+                <circle cx="9" cy="9" r="2.6"/>
+              </svg>
+              <svg class="eye-off" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" fill="none"
+                   stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1.5 9S4.2 3.8 9 3.8 16.5 9 16.5 9 13.8 14.2 9 14.2 1.5 9 1.5 9Z"/>
+                <path d="M2.6 2.6l12.8 12.8"/>
+              </svg>
+            </button>
+          </span>
         </label>
-        <div class="field"><span class="label-text"><label for="coords">经纬度</label><button type="button" class="plain pick" id="pick-here">[点击使用当前位置]</button><button type="button" class="hint-toggle" id="coords-hint-toggle" title="怎么拿到精确坐标" aria-label="怎么拿到精确坐标" aria-expanded="false" aria-controls="coords-hint"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M7 6.2v3.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="7" cy="4.2" r="0.95" fill="currentColor"/></svg></button></span>
-          <input name="coords" id="coords" placeholder="112.xxxx,28.xxxx" autocomplete="off" required
-                 value="{{ '%.6f,%.6f'|format(editing.jd, editing.wd) if editing and editing.jd else '' }}">
-        </div>
         <button type="submit">{{ "保存" if editing else "添加" }}</button>
       </div>
-      <p id="coords-note" class="msg"></p>
-      <p class="hint hidden" id="coords-hint">定位给的是大概位置，差得多就去
-        <a href="https://lbs.amap.com/tools/picker" target="_blank" rel="noopener">高德坐标拾取器</a>
-        拾取精确坐标，把复制到的经纬度粘进上面。</p>
       <p class="msg {{ msg_kind }}">{{ msg or '' }}</p>
     </div>
   </form>

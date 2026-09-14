@@ -48,6 +48,16 @@ class InvalidTimeError(BadRequestError):
         super().__init__(message, "invalid_time")
 
 
+class LoginPausedError(AppError):
+    status = 503
+    expose = True
+    code = "login_paused"
+
+    def __init__(self, message: str, retry_after_sec: int = 60):
+        super().__init__(message)
+        self.retry_after_sec = retry_after_sec
+
+
 class MasterKeyMissingError(AppError):
     code = "master_key_missing"
 

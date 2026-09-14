@@ -1,7 +1,7 @@
 [project]
 name = "csu-dk"
 version = "0.1.0"
-description = "中南大学妙妙道具：邮箱验证码登录，托管学号密码，每天随机时刻自动打卡"
+description = "中南大学妙妙道具：邮箱验证码登录，托管学号密码，自动打卡"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
@@ -22,11 +22,18 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.14"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.14",
+    "httpx2>=2.12",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
 pythonpath = ["."]
+filterwarnings = [
+    "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated.*:DeprecationWarning:starlette\\.testclient",
+]
 
 [tool.ruff]
 target-version = "py312"

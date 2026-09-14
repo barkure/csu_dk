@@ -32,7 +32,7 @@ def make_account(user_id: int, username: str | None = None, **overrides) -> dict
     now = to_local_iso(local_now(cfg.config.tz))
     row = {
         "user_id": user_id, "csu_username": username or f"9{next(_counter):08d}", "password_enc": encrypt_secret("pw"),
-        "enabled": 1, "window_start": "20:00", "window_end": "22:30",
+        "enabled": 1,
         "jd": 112.936833, "wd": 28.157238, "dkdz": "升华8栋", "created_at": now, "updated_at": now,
     }
     row.update(overrides)
@@ -66,7 +66,6 @@ def test_four_states_and_colors(kind, text, cls):
 
 
 def test_status_ignores_last_checkin_result_and_login_state():
-    """状态不等于最近一次打卡结果，也不等于"是否已登录"。"""
     failed_checkin = {"auth_error": "", "last_status": "failed", "last_message": "打卡失败"}
     assert account_status(failed_checkin)["text"] == "正常"
 
@@ -74,13 +73,7 @@ def test_status_ignores_last_checkin_result_and_login_state():
     assert account_status(not_logged_in)["text"] == "正常"
 
 
-def test_legacy_needs_reauth_maps_to_other():
-    """旧数据只有笼统的"需重填"标记，没有类型 —— 归到其他故障，而不是正常。"""
-    assert account_status({"auth_error": "", "needs_reauth": 1}) == {"text": "其他故障", "cls": "err"}
-
-
 def test_status_survives_next_day(user):
-    """跨日不改变状态：Token/Cookie 过期是自动重认证的正常流程。"""
     account = make_account(user["id"])
     db.set_auth_error(account["id"], "bad_credentials")
     db.update_account(account["id"], {"last_run_at": "2026-09-01T20:00:00", "token_at": "2026-09-01T20:00:00"})
@@ -91,7 +84,6 @@ def test_status_survives_next_day(user):
 
 
 def test_toggle_does_not_change_status(client, user):
-    """勾选框只管"是否按计划执行"，不改变账号状态，也不出现"已停用"。"""
     account = make_account(user["id"])
     db.set_auth_error(account["id"], "locked")
     ui_login(client, USER_EMAIL)
@@ -107,16 +99,13 @@ def test_toggle_does_not_change_status(client, user):
 
 
 def test_auth_success_clears_the_failure(client, user, monkeypatch):
-    """认证成功后清除故障、恢复"正常"；仅刷新页面不会清除。"""
     account = make_account(user["id"])
     db.set_auth_error(account["id"], "bad_credentials")
 
     ui_login(client, USER_EMAIL)
     client.get("/ui/accounts")          # 只刷新页面：状态必须还在
     assert db.get_account_by_id(account["id"])["auth_error"] == "bad_credentials"
-
-    # 编辑账号 → 提交即验证（这里把学校那一步换成成功）
-    monkeypatch.setattr("app.accounts.probe_window", lambda *_a, **_k: {
+    monkeypatch.setattr("app.accounts.verify_login", lambda *_a, **_k: {
         "location": {"canDk": True, "yxMc": "升华8栋"}, "address": "升华8栋",
         "session": {"token": encrypt_secret("jwt"), "casual": "c", "cookies": "[]"},
         "window": ("20:00", "22:30"),
@@ -168,7 +157,6 @@ def test_failure_classification(message, kind):
 
 
 def test_ip_freeze_is_not_an_account_failure():
-    """学校冻结的是这台机器的出口 IP，不是某个账号，不能记成账号故障。"""
     error = CasIpFrozenError("学校统一身份认证已冻结本机 IP：多次无效登录会触发风控")
     assert checkin._failure_kind(error, str(error)) is None
 
@@ -179,8 +167,7 @@ def test_local_crypto_and_zhxg_errors_are_other():
 
 
 def test_checkin_stage_failure_does_not_touch_status(user, monkeypatch):
-    """登录成功之后出问题（位置校验/提交失败）不改账号状态，只留在执行记录里。"""
-    account = make_account(user["id"], window_start="00:00", window_end="23:59")
+    account = make_account(user["id"])
     from app import checkin as engine
 
     class FakeZhxg:
@@ -191,11 +178,9 @@ def test_checkin_stage_failure_does_not_touch_status(user, monkeypatch):
             return "[]"
 
         def dk_status(self):
-            # kdk=True 才会走到位置校验那一步
             return {"code": "200", "data": {"sfydk": False, "kdk": True, "dksj": None}}
 
         def check_location(self, *_a, **_k):
-            # 学校拒绝时的返回形态
             return {"code": "200", "data": {"canDk": False, "yxMc": "升华8栋", "pcMi": 320,
                                             "msg": "距离打卡点过远"}}
 
@@ -211,7 +196,6 @@ def test_checkin_stage_failure_does_not_touch_status(user, monkeypatch):
 
 
 def test_failure_log_has_no_secrets(monkeypatch):
-    """详细原因只进日志，且不含密码 / 完整 Token / Cookie。"""
     events = []
     monkeypatch.setattr("app.checkin.log_event", lambda event, **fields: events.append((event, fields)))
     checkin.mark_auth_failure(7, RuntimeError("学号或密码错误"), "学号或密码错误")
@@ -224,11 +208,7 @@ def test_failure_log_has_no_secrets(monkeypatch):
 
 
 def test_checkin_stage_exception_does_not_flag_account(user, monkeypatch):
-    """登录成功之后抛异常（哪怕文本里带"锁定"这类字眼）也不算认证故障。
-
-    这是把"登录阶段 / 打卡阶段"真正分开的意义所在：业务接口的错误文案不受我们控制。
-    """
-    account = make_account(user["id"], window_start="00:00", window_end="23:59")
+    account = make_account(user["id"])
     from app import checkin as engine
 
     class FakeZhxg:
@@ -251,12 +231,11 @@ def test_checkin_stage_exception_does_not_flag_account(user, monkeypatch):
 
 
 def test_api_password_change_clears_failure(client, user, monkeypatch):
-    """API 改密码也会先验证登录：成功要清故障，否则会出现"调度恢复但页面还红着"。"""
     account = make_account(user["id"])
     db.set_auth_error(account["id"], "bad_credentials")
     ui_login(client, USER_EMAIL)
 
-    monkeypatch.setattr("app.accounts.probe_window", lambda *_a, **_k: {
+    monkeypatch.setattr("app.accounts.verify_login", lambda *_a, **_k: {
         "location": {"canDk": True, "yxMc": "升华8栋"}, "address": "升华8栋",
         "session": {"token": encrypt_secret("jwt"), "casual": "c", "cookies": "[]"},
         "window": ("20:00", "22:30"),
@@ -265,11 +244,10 @@ def test_api_password_change_clears_failure(client, user, monkeypatch):
     assert response.status_code == 200, response.text
 
     row = db.get_account_by_id(account["id"])
-    assert row["auth_error"] == "" and row["needs_reauth"] == 0
+    assert row["auth_error"] == ""
 
 
 def test_api_password_change_failure_records_kind(client, user, monkeypatch):
-    """API 改密码验证失败时，要按原因记下状态（和网页路径一致）。"""
     from app.errors import AppError
 
     account = make_account(user["id"])
@@ -278,7 +256,7 @@ def test_api_password_change_failure_records_kind(client, user, monkeypatch):
     def reject(*_a, **_k):
         raise AppError("验证失败，未保存：学号或密码错误", status=400, expose=True)
 
-    monkeypatch.setattr("app.accounts.probe_window", reject)
+    monkeypatch.setattr("app.accounts.verify_login", reject)
     response = client.patch(f"/api/accounts/{account['id']}", json={"password": "wrong"})
     assert response.status_code == 400
 
@@ -286,7 +264,6 @@ def test_api_password_change_failure_records_kind(client, user, monkeypatch):
 
 
 def test_log_scrubs_secrets_inside_the_message(monkeypatch):
-    """异常文本里夹着的 JWT / cookie 也要擦掉 —— 脱敏规则只看键名，值靠这里处理。"""
     events = []
     monkeypatch.setattr("app.checkin.log_event", lambda event, **fields: events.append(fields))
 
@@ -322,7 +299,6 @@ def test_log_scrubs_secrets_inside_the_message(monkeypatch):
     ('{"token": "a, b, c"}', "a, b, c"),
 ])
 def test_secrets_inside_messages_never_reach_the_log(monkeypatch, poisoned, leak):
-    """日志脱敏只看键名，值要靠 scrub_detail 按形态擦：JSON、请求头、Cookie、URL 都要覆盖。"""
     events = []
     monkeypatch.setattr("app.checkin.log_event", lambda event, **fields: events.append(fields))
 

@@ -9,9 +9,7 @@ from pathlib import Path
 import pytest
 
 STATIC = Path(__file__).resolve().parent.parent / "app" / "static"
-OUR_SCRIPTS = ["geo.js", "login.js"]
-
-# 内置 htmx 的版本（升级时同时改这里和 README）
+OUR_SCRIPTS = ["login.js", "form.js"]
 HTMX_VERSION = "4.0.0"
 
 
@@ -22,7 +20,6 @@ def test_vendored_htmx_version_is_pinned():
 
 
 def test_script_htmx_event_names_exist_in_vendored_htmx():
-    """脚本里引用的 htmx 事件名必须在内置 htmx 里存在：写错不报错，只是静默不触发。"""
     vendor = (STATIC / "htmx.min.js").read_text()
     used = set()
     for name in OUR_SCRIPTS:
@@ -56,7 +53,6 @@ def test_templates_reference_existing_assets():
 
 
 def test_css_id_selectors_exist_in_templates():
-    """CSS 里按 id 定位的元素必须在模板里真的存在。"""
     css = (STATIC / "app.css").read_text()
     ids = {
         match for match in __import__("re").findall(r"#([a-zA-Z][\w-]*)", css)
@@ -69,11 +65,8 @@ def test_css_id_selectors_exist_in_templates():
 
 
 def test_mobile_records_drop_the_year_only():
-    """移动端不显示年份：窄屏仍是三列列表，只是时间省掉年份。"""
     css = (STATIC / "app.css").read_text()
     wide, mobile = css.split("@media (max-width: 720px)")
-
-    # 默认规则必须在媒体查询之前：同权重下写后面会盖掉窄屏的 display: inline
     assert ".ts-short { display: none; }" in wide, "默认藏起短格式，且要写在媒体查询之前"
     assert "#records th, #records td { white-space: normal; }" in mobile, "保持原来的列表样式"
     assert "#records td:nth-child(1) { white-space: normal; width: 1%; }" in mobile, \

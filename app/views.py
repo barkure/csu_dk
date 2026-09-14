@@ -1,4 +1,4 @@
-"""展示层：把库里的账号行翻译成界面文案（原 dashboard.js 里的那套规则，现在服务端可测）。"""
+"""界面状态与文案。"""
 from __future__ import annotations
 
 from . import config as cfg
@@ -15,10 +15,7 @@ STATUS_CLASS = {
 }
 
 
-def status_label(status: str | None, message: str | None) -> str:
-    """兼容早期把"未到打卡时间"记成 skipped 的旧记录。"""
-    if status == CheckinStatus.SKIPPED and "未到" in str(message or ""):
-        return "未到时间"
+def status_label(status: str | None) -> str:
     return STATUS_TEXT.get(status or "", status or "")
 
 
@@ -35,9 +32,9 @@ def _now() -> tuple[str, str]:
     return to_local_iso(now), to_local_iso(now)[11:16]
 
 
-def window_passed(account: dict) -> bool:
+def window_passed(_account: dict) -> bool:
     """跨天窗口永远算"今天稍后还有机会"，不判漏打。"""
-    start, end = str(account.get("window_start") or ""), str(account.get("window_end") or "")
+    start, end = cfg.config.checkin_window_start, cfg.config.checkin_window_end
     if not start or not end or start > end:
         return False
     return _now()[1] > end
@@ -58,8 +55,6 @@ def today_result(account: dict) -> dict:
     return {"label": "未到时间", "cls": ""}
 
 
-# 四种账号状态。与"自动打卡"开关、业务 Token / CAS Cookie 是否过期都无关。
-# 判定依据是账号自己存的认证故障类型（auth_error），不是最近一次打卡结果。
 AUTH_STATUS = {
     AuthError.NONE: ("正常", "ok"),
     AuthError.BAD_CREDENTIALS: ("密码错误", "err"),
@@ -70,18 +65,9 @@ AUTH_STATUS = {
 
 def account_status(account: dict) -> dict:
     raw = str(account.get("auth_error") or "")
-    if not raw and account.get("needs_reauth"):
-        raw = AuthError.OTHER   # 只有笼统的"需重填"时归到其他故障
     text, cls = AUTH_STATUS.get(AuthError(raw) if raw in set(AuthError) else AuthError.OTHER,
                                 AUTH_STATUS[AuthError.OTHER])
     return {"text": text, "cls": cls}
-
-
-def coords_text(account: dict) -> str:
-    jd, wd = account.get("jd"), account.get("wd")
-    if jd is None or wd is None:
-        return "—"
-    return f"{float(jd):.6f},{float(wd):.6f}"
 
 
 def account_view(account: dict) -> dict:
@@ -89,6 +75,4 @@ def account_view(account: dict) -> dict:
         "raw": account,
         "status": account_status(account),
         "today": today_result(account),
-        "coords": coords_text(account),
-        "next": fmt(account.get("next_run_at")),
     }

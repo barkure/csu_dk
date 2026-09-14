@@ -7,7 +7,7 @@ __pycache__/
 
 # 本地配置与数据
 .env
-data/
+/data/
 *.db
 *.db-wal
 *.db-shm

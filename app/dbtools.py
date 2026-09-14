@@ -1,30 +1,9 @@
-"""数据库工具：建库、查库、把旧库数据导入新库。
-
-数据升级的方式是"按最新结构建新库 + 导入旧数据"，所以这里不保留迁移链，
-只提供三件事：建库、核对结构、导入并校验。
-"""
+"""数据库检查与结果合并。"""
 from __future__ import annotations
-
-import sqlite3
-from pathlib import Path
 
 from . import config as cfg
 from . import db
-from .crypto import decrypt_secret
-
-# 导入顺序：先父后子（users → accounts → records/sessions）
-_TABLES = (
-    ("users", ("id", "email", "created_at", "last_login_at")),
-    ("accounts", (
-        "id", "user_id", "csu_username", "password_enc", "enabled", "window_start", "window_end",
-        "jd", "wd", "dkdz", "casual", "token", "cookies", "token_at", "next_run_at",
-        "last_run_at", "last_status", "last_message", "needs_reauth", "auth_error",
-        "created_at", "updated_at",
-    )),
-    ("sessions", ("token_hash", "user_id", "created_at", "expires_at", "user_agent")),
-    ("login_codes", ("id", "email", "code_hash", "expires_at", "used", "attempts", "created_at")),
-    ("records", ("id", "account_id", "run_at", "trigger", "status", "message", "dksj")),
-)
+from .clock import local_now, to_local_iso
 
 
 def init() -> str:
@@ -35,76 +14,43 @@ def init() -> str:
 
 
 def check() -> tuple[bool, list[str]]:
-    """核对结构，返回 (是否通过, 缺失项)。"""
-    missing = db.missing_structure(db._reference_structure(), db._structure(db._conn))
-    return not missing, missing
+    expected = db._reference_structure()
+    actual = db._structure(db._conn)
+    differences = db.missing_structure(expected, actual) + db.unexpected_structure(expected, actual)
+    return not differences, differences
 
 
-def _source_tables(path: Path) -> dict[str, set[str]]:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
-        return db._structure(conn)
-    finally:
-        conn.close()
+_RESULT_FIELDS = ("last_run_at", "last_status", "last_message", "jd", "wd", "dkdz")
+_SESSION_FIELDS = ("token", "casual", "cookies", "token_at", "auth_error")
 
 
-def import_from(source: Path) -> dict:
-    """把旧库的数据导入当前库（当前库必须是空库或同结构库）。
-
-    密文字段原样搬运：能用同一把 data/master.key 解开，账号不用重新录密码。
-    """
-    if not source.exists():
-        raise SystemExit(f"找不到来源库：{source}")
-    if source.resolve() == cfg.DB_PATH.resolve():
-        raise SystemExit("来源库就是当前库，不需要导入")
-
-    db._ensure_schema()
-    missing = db.missing_structure(db._reference_structure(), _source_tables(source))
-    if missing:
-        raise SystemExit(f"来源库结构不符（缺少 {'、'.join(missing)}），请先把它的数据导出成当前结构")
-
-    source_conn = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
-    source_conn.row_factory = sqlite3.Row
-    report: dict[str, int] = {}
-    try:
-        # 导入失败时整体回滚
-        with db.transaction():
-            for table, columns in _TABLES:
-                rows = source_conn.execute(f"SELECT {', '.join(columns)} FROM {table}").fetchall()
-                report[table] = len(rows)
-                # 重建目标表
-                db._exec(f"DELETE FROM {table}")
-                if not rows:
-                    continue
-                placeholders = ", ".join("?" * len(columns))
-                db._conn.executemany(
-                    f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
-                    [tuple(row[column] for column in columns) for row in rows],
-                )
-    finally:
-        source_conn.close()
-
-    return {**report, **verify()}
+def _newer(candidate, current) -> bool:
+    return bool(candidate) and (not current or str(candidate) > str(current))
 
 
-def verify() -> dict:
-    """导入后校验：密文能否用当前密钥解开、账号与记录数是否对得上。"""
-    accounts = db.all_accounts_raw()
-    unreadable: list[str] = []
-    for account in accounts:
-        for column in ("password_enc", "token", "cookies"):
-            value = account.get(column)
-            if not value:
+def merge_results(payload: dict) -> dict:
+    """合并外部执行产生的账号状态、登录态和记录。"""
+    applied = {"accounts": 0, "records": 0, "sessions": 0, "skipped": 0}
+    for account_id, item in (payload.get("accounts") or {}).items():
+        account = db.get_account_by_id(int(account_id))
+        if not account:
+            applied["skipped"] += 1
+            continue
+        fields: dict = {}
+        if _newer(item.get("last_run_at"), account.get("last_run_at")):
+            fields.update({key: item[key] for key in _RESULT_FIELDS if key in item})
+        if _newer(item.get("token_at"), account.get("token_at")):
+            fields.update({key: item[key] for key in _SESSION_FIELDS if key in item})
+            applied["sessions"] += 1
+        if fields:
+            fields["updated_at"] = to_local_iso(local_now(cfg.config.tz))
+            db.update_account(int(account_id), fields)
+            applied["accounts"] += 1
+        for record in item.get("records") or []:
+            run_at, status = str(record.get("run_at") or ""), str(record.get("status") or "")
+            if not run_at or db.has_record(int(account_id), run_at, status):
                 continue
-            try:
-                decrypt_secret(str(value))
-            except Exception:  # noqa: BLE001 - 校验用：解不开就记下来
-                unreadable.append(f"{account['csu_username']}.{column}")
-
-    return {
-        "accounts": len(accounts),
-        "records": db._one("SELECT COUNT(*) AS n FROM records")["n"],
-        "users": db._one("SELECT COUNT(*) AS n FROM users")["n"],
-        "unreadable": len(unreadable),
-        "detail": unreadable,
-    }
+            db.add_record(int(account_id), run_at, str(record.get("trigger") or "manual"),
+                          status, str(record.get("message") or ""), record.get("dksj"))
+            applied["records"] += 1
+    return applied

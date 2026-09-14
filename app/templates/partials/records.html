@@ -13,7 +13,7 @@
       {% for record in records %}
         <tr>
           <td class="mono"><span class="ts-full">{{ fmt_full(record.run_at) }}</span><span class="ts-short">{{ fmt(record.run_at) }}</span></td>
-          <td><span class="badge {{ status_class(record.status) }}">{{ status_label(record.status, record.message) }}</span></td>
+          <td><span class="badge {{ status_class(record.status) }}">{{ status_label(record.status) }}</span></td>
           <td>{{ record.message or '' }}</td>
         </tr>
       {% else %}

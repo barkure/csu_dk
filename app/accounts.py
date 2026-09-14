@@ -1,54 +1,40 @@
-"""账号的新增/编辑（"提交即验证"的那套流程）。JSON API 与网页表单共用这一份。"""
+"""账号管理。"""
 from __future__ import annotations
 
 from . import config as cfg
 from . import db
-from .checkin import mark_auth_failure, probe_window
+from .checkin import ENTRY_CREATE, ENTRY_UPDATE, mark_auth_failure, verify_login
 from .clock import local_now, to_local_iso
 from .crypto import decrypt_secret, encrypt_secret
 from .errors import AppError, BadRequestError
 from .locks import lock_for
-from .validate import validate_coordinates, validate_window
 
 
 def _now_iso() -> str:
     return to_local_iso(local_now(cfg.config.tz))
 
 
-def _read_coords(payload: dict, existing: dict | None) -> tuple[float, float]:
-    try:
-        jd = existing["jd"] if payload.get("jd") is None else float(payload["jd"])
-        wd = existing["wd"] if payload.get("wd") is None else float(payload["wd"])
-    except (TypeError, ValueError) as error:
-        raise BadRequestError("经纬度必须是有效数字", "invalid_coord") from error
-    if jd is None or wd is None:
-        raise BadRequestError("缺少经纬度：请填写，或点「使用当前定位」自动获取", "invalid_coord")
-    return validate_coordinates(jd, wd)
-
-
-def _probe(username: str, password: str | None, existing: dict | None, jd: float, wd: float) -> dict | None:
-    """提交即验证：登录学校读一次班次/窗口/定位，读不通就不保存。"""
+def _probe(username: str, password: str | None, existing: dict | None, *,
+           entry: str, user_id: int, ip: str | None = None) -> dict | None:
     candidate = password or (decrypt_secret(existing["password_enc"]) if existing else None)
     if not candidate:
         return None
     try:
-        return probe_window(username, candidate, jd, wd)
+        return verify_login(username, candidate, entry=entry, user_id=user_id,
+                            account_id=(existing or {}).get("id"), ip=ip)
+    except AppError:
+        raise
     except Exception as error:
         raise AppError(f"验证失败，未保存：{error}", status=400, expose=True) from error
 
 
-def create_or_update(user: dict, payload: dict) -> dict:
-    """新增/编辑账号。**按用户串行**（不只是按学号）：
-
-    · 避免并发的新增请求都去登录一次学校（学校按出口 IP 风控）；
-    · 避免两个不同学号同时通过"数量没超上限"的检查 —— 先查数量再插入会穿透；
-    · 网页与 JSON 接口共用这一把锁，免得只在某一条路由上加保护。
-    """
+def create_or_update(user: dict, payload: dict, *, ip: str | None = None) -> dict:
+    """按用户串行新增或编辑账号。"""
     with lock_for(f"add:{user['id']}"):
-        return _create_or_update_locked(user, payload)
+        return _create_or_update_locked(user, payload, ip=ip)
 
 
-def _create_or_update_locked(user: dict, payload: dict) -> dict:
+def _create_or_update_locked(user: dict, payload: dict, *, ip: str | None = None) -> dict:
     csu_username = str(payload.get("csuUsername") or "").strip()
     if not csu_username:
         raise BadRequestError("缺少学号")
@@ -60,30 +46,21 @@ def _create_or_update_locked(user: dict, payload: dict) -> dict:
     if not existing and db.count_accounts(user["id"]) >= cfg.config.max_accounts_per_user:
         raise BadRequestError(f"最多只能托管 {cfg.config.max_accounts_per_user} 个账号，请先删除不用的")
 
-    jd, wd = _read_coords(payload, existing)
     try:
-        probe = _probe(csu_username, password, existing, jd, wd)
+        probe = _probe(csu_username, password, existing,
+                       entry=ENTRY_UPDATE if existing else ENTRY_CREATE,
+                       user_id=user["id"], ip=ip)
     except AppError as error:
-        # 记录已有账号的验证故障
         if existing:
             mark_auth_failure(existing["id"], error.__cause__ or error, error.message)
         raise
 
-    window = (probe or {}).get("window") or (None, None)
-    window_start = str(payload.get("windowStart") or window[0] or cfg.config.default_window_start)
-    window_end = str(payload.get("windowEnd") or window[1] or cfg.config.default_window_end)
-    validate_window(window_start, window_end, cfg.config.max_window_hours)
-
     fields = {
-        # 编辑保持原状态，新建默认启用
         "enabled": (existing["enabled"] if existing else 1) if payload.get("enabled") is None
         else (0 if payload["enabled"] is False else 1),
-        "window_start": window_start,
-        "window_end": window_end,
-        "jd": jd,
-        "wd": wd,
-        # 地址仅采用实时结果
-        "dkdz": (probe or {}).get("address") or (existing or {}).get("dkdz") or "",
+        "jd": (existing or {}).get("jd"),
+        "wd": (existing or {}).get("wd"),
+        "dkdz": (existing or {}).get("dkdz") or "",
         "updated_at": _now_iso(),
     }
 
@@ -94,8 +71,7 @@ def _create_or_update_locked(user: dict, payload: dict) -> dict:
             "casual": probe["session"]["casual"],
             "cookies": probe["session"]["cookies"],
             "token_at": _now_iso(),
-            "needs_reauth": 0,
-            "auth_error": "",       # 这次验证真的登录成功了 → 清除原有认证故障
+            "auth_error": "",
         }
 
     try:
@@ -120,60 +96,29 @@ def _create_or_update_locked(user: dict, payload: dict) -> dict:
     return {"account_id": account_id, "verify": {"ok": True, **(probe or {})}}
 
 
-def update(user: dict, account_id: int, payload: dict) -> dict:
+def update(user: dict, account_id: int, payload: dict, *, ip: str | None = None) -> dict:
     account = db.get_account(user["id"], account_id)
     if not account:
         raise AppError("账号不存在", status=404, expose=True)
 
     fields: dict = {"updated_at": _now_iso()}
-    try:
-        if payload.get("enabled") is not None:
-            fields["enabled"] = 1 if payload["enabled"] else 0
-        if payload.get("windowStart"):
-            fields["window_start"] = str(payload["windowStart"])
-        if payload.get("windowEnd"):
-            fields["window_end"] = str(payload["windowEnd"])
-        # float('abc') 会抛异常（Node 的 Number('abc') 是 NaN），所以解析要包起来
-        if payload.get("jd") is not None:
-            fields["jd"] = float(payload["jd"])
-        if payload.get("wd") is not None:
-            fields["wd"] = float(payload["wd"])
-        validate_coordinates(fields.get("jd", account["jd"]), fields.get("wd", account["wd"]))
-        validate_window(str(fields.get("window_start", account["window_start"])),
-                        str(fields.get("window_end", account["window_end"])), cfg.config.max_window_hours)
-    except (TypeError, ValueError) as error:
-        raise BadRequestError("经纬度必须是有效数字", "invalid_coord") from error
+    if payload.get("enabled") is not None:
+        fields["enabled"] = 1 if payload["enabled"] else 0
 
-    # 坐标变化时清除旧楼栋名
-    coords_changed = (
-        ("jd" in fields and fields["jd"] != account["jd"])
-        or ("wd" in fields and fields["wd"] != account["wd"])
-    )
-    if coords_changed and account["dkdz"]:
-        fields["dkdz"] = ""
-
-    # 新密码需立即验证
     if payload.get("password"):
         password = str(payload["password"])
         try:
             probe = _probe(account["csu_username"], password, account,
-                           fields.get("jd", account["jd"]), fields.get("wd", account["wd"]))
+                           entry=ENTRY_UPDATE, user_id=user["id"], ip=ip)
         except AppError as error:
             mark_auth_failure(account["id"], error.__cause__ or error, error.message)
             raise
         fields["password_enc"] = encrypt_secret(password)
-        fields["needs_reauth"] = 0
-        fields["auth_error"] = ""       # 这次验证真的登录成功了 → 清除原有认证故障
+        fields["auth_error"] = ""
         if probe.get("session", {}).get("token"):
             fields.update({
                 "token": probe["session"]["token"], "casual": probe["session"]["casual"],
                 "cookies": probe["session"]["cookies"], "token_at": _now_iso(),
             })
-        # 优先采用实时地址
-        if probe.get("address") and (coords_changed or not account["dkdz"]):
-            fields["dkdz"] = probe["address"]
-        if not fields.get("window_start") and probe.get("window"):
-            fields["window_start"], fields["window_end"] = probe["window"][0], probe["window"][1]
-
     db.update_account(account_id, fields)
     return {"account_id": account_id}

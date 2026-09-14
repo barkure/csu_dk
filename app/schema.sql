@@ -4,8 +4,6 @@ CREATE TABLE IF NOT EXISTS accounts (
   csu_username  TEXT NOT NULL,
   password_enc  TEXT NOT NULL,
   enabled       INTEGER NOT NULL DEFAULT 1,
-  window_start  TEXT NOT NULL,
-  window_end    TEXT NOT NULL,
   jd            REAL,
   wd            REAL,
   dkdz          TEXT NOT NULL DEFAULT '',
@@ -13,13 +11,12 @@ CREATE TABLE IF NOT EXISTS accounts (
   token         TEXT,
   cookies       TEXT,
   token_at      TEXT,
-  next_run_at   TEXT,
   last_run_at   TEXT,
   last_status   TEXT,
   last_message  TEXT,
-  needs_reauth  INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL, auth_error TEXT NOT NULL DEFAULT '',
+  updated_at    TEXT NOT NULL,
+  auth_error    TEXT NOT NULL DEFAULT '',
   UNIQUE(user_id, csu_username)
 );
 CREATE TABLE IF NOT EXISTS login_codes (

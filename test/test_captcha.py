@@ -18,8 +18,6 @@ PAGE = """
 <img id="captchaImg" src="/authserver/captcha?ts=1">
 </form></body></html>
 """
-
-# 页面里有登录表单、但没写验证码图片地址（真学校很可能就是这样，图要靠接口取）
 PAGE_WITHOUT_IMAGE = """
 <html><body><form>
 <input id="execution" value="e1s1">
@@ -47,7 +45,6 @@ class FakeResponse:
 
 
 class FakeSession:
-    """按 URL 分流的假会话，记录每一次请求。"""
 
     def __init__(self, need_captcha: bool, login_pages: list[str], posts: list[FakeResponse],
                  first_url: str = LOGIN_URL):
@@ -73,7 +70,6 @@ class FakeSession:
 
 
 def test_without_captcha_nothing_changes(monkeypatch):
-    """学校不要验证码时，走的就是老路径：一次 POST、验证码字段为空、不动 OCR。"""
     called = []
     monkeypatch.setattr(cas.ocr, "solve", lambda *_a, **_k: called.append(1) or "zzzzzz")
 
@@ -85,7 +81,6 @@ def test_without_captcha_nothing_changes(monkeypatch):
 
 
 def test_solved_captcha_is_submitted(monkeypatch):
-    """要验证码时：取图 → 识别 → 把结果提交上去。"""
     seen = []
 
     def fake_solve(image: bytes) -> str:
@@ -102,7 +97,6 @@ def test_solved_captcha_is_submitted(monkeypatch):
 
 
 def test_wrong_captcha_retries_then_gives_up(monkeypatch):
-    """识别错了会换一张图重试，但次数有上限 —— 每次失败登录都在喂学校风控。"""
     monkeypatch.setattr(cas.ocr, "solve", lambda _image: "aaaaaa")
 
     session = FakeSession(need_captcha=True, login_pages=[PAGE],
@@ -126,7 +120,6 @@ def test_second_attempt_succeeds(monkeypatch):
 
 
 def test_no_ocr_never_submits_a_blank_captcha(monkeypatch):
-    """识别不出来时一次 POST 都不发：提交空验证码必然是失败登录。"""
     monkeypatch.setattr(cas.ocr, "solve", lambda _image: None)
 
     session = FakeSession(need_captcha=True, login_pages=[PAGE],
@@ -140,7 +133,6 @@ def test_no_ocr_never_submits_a_blank_captcha(monkeypatch):
 
 
 def test_captcha_image_url_is_discovered_from_page(monkeypatch):
-    """图片地址要从登录页里认出来，而不是写死。"""
     monkeypatch.setattr(cas.ocr, "solve", lambda _image: "cccccc")
     session = FakeSession(need_captcha=True, login_pages=[PAGE],
                           posts=[FakeResponse(text=LANDING, url="https://zhxg.csu.edu.cn/home")])
@@ -157,7 +149,6 @@ def test_captcha_image_url_is_discovered_from_page(monkeypatch):
 
 
 def test_fallback_uses_the_real_endpoint(monkeypatch):
-    """页面上认不出图片时，兜底要用学校真实的取图接口 getCaptcha.htl（不是猜的 /captcha）。"""
     monkeypatch.setattr(cas.ocr, "solve", lambda _image: "ffffff")
     urls: list[str] = []
     session = FakeSession(need_captcha=True, login_pages=[PAGE_WITHOUT_IMAGE],
@@ -174,7 +165,6 @@ def test_fallback_uses_the_real_endpoint(monkeypatch):
 
 
 def test_ocr_module_is_optional_and_never_raises():
-    """没装 ddddocr 也只是返回 None；装了就不能在垃圾数据上炸。"""
     assert ocr.solve(b"") is None
     if ocr.available():
         assert ocr.solve(b"not an image at all") is None
@@ -183,7 +173,6 @@ def test_ocr_module_is_optional_and_never_raises():
 
 
 def test_non_image_response_is_not_fed_to_ocr(monkeypatch):
-    """取回来的是 HTML 错误页（地址猜错了）时，不许拿去识别、更不许提交登录。"""
     called = []
     monkeypatch.setattr(cas.ocr, "solve", lambda image: called.append(image) or "dddddd")
 
@@ -205,7 +194,6 @@ def test_non_image_response_is_not_fed_to_ocr(monkeypatch):
 
 
 def test_evidence_is_kept_for_later_inspection(monkeypatch):
-    """真碰上验证码时把页面和图片留一份：这条链路没法在测试里真验，只能靠现场证据。"""
     monkeypatch.setattr(cas.ocr, "solve", lambda _image: "eeeee1")
     session = FakeSession(need_captcha=True, login_pages=[PAGE],
                           posts=[FakeResponse(text=CAPTCHA_TIP), FakeResponse(text=CAPTCHA_TIP)])
@@ -229,7 +217,6 @@ def test_evidence_is_kept_for_later_inspection(monkeypatch):
     ("", None),
 ])
 def test_ocr_only_accepts_plausible_lengths(monkeypatch, raw, expected):
-    """识别结果的长度必须像个验证码，否则这一次就是没认出来，别拿去换一次失败登录。"""
     class FakeEngine:
         def classification(self, _image):
             return raw
@@ -240,7 +227,6 @@ def test_ocr_only_accepts_plausible_lengths(monkeypatch, raw, expected):
 
 
 def test_captcha_log_does_not_leak_the_recognized_text(monkeypatch):
-    """日志里只留"认出来没有 + 几位"，不写明文。"""
     events = []
     monkeypatch.setattr(cas, "log_event", lambda event, **fields: events.append((event, fields)))
     monkeypatch.setattr(cas.ocr, "solve", lambda _image: "s3cr3t")
@@ -260,11 +246,6 @@ CALLBACK = "<html><script>var uid = 'abc'; var lzc = 'def';</script></html>"
 
 
 def test_valid_cas_session_skips_the_password(monkeypatch):
-    """CAS 会话（CASTGC）还有效时，不该再交一次密码。
-
-    这是"把 CAS cookie 存下来"的全部意义：学校那边从每天一次密码登录变成每十几天一次，
-    失败计数与验证码的暴露都更小。
-    """
     called = []
     monkeypatch.setattr(cas, "encrypt_password", lambda pw, salt: called.append(pw) or "encrypted")
 
@@ -276,14 +257,12 @@ def test_valid_cas_session_skips_the_password(monkeypatch):
 
 
 def test_missing_password_only_fails_if_cas_really_needs_it(monkeypatch):
-    """密码解不开时：会话有效就继续；真需要交密码才报错（提示人工重填）。"""
     session = FakeSession(need_captcha=False, login_pages=[CALLBACK], posts=[],
                           first_url="https://zhxg.csu.edu.cn/home")
     assert cas.cas_login(session, "255000001", None, "svc") == CALLBACK
 
     needs_password = FakeSession(need_captcha=False, login_pages=[PAGE],
                                  posts=[FakeResponse(text=LANDING, url="https://zhxg.csu.edu.cn/home")])
-    # 必须是凭据类错误：调用方靠类型（和 NEEDS_RECREDENTIALS）决定"标记需重填并暂停打卡"
     with pytest.raises(SecretDecryptError) as error:
         cas.cas_login(needs_password, "255000001", None, "svc")
     assert "重新提交一次密码" in str(error.value)
@@ -292,10 +271,6 @@ def test_missing_password_only_fails_if_cas_really_needs_it(monkeypatch):
 
 
 def test_password_is_encrypted_when_cas_asks_for_it(monkeypatch):
-    """反证：CAS 真要密码时，必须走一次加密提交。
-
-    这条是给"探针可信度"兜底的 —— 上面两条断言"0 次提交"，得先证明计数本来就会动。
-    """
     called = []
     monkeypatch.setattr(cas, "encrypt_password", lambda pw, salt: called.append((pw, salt)) or "ENCRYPTED")
 

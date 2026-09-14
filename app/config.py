@@ -1,7 +1,4 @@
-"""配置：pydantic-settings 读环境变量（自动加载 .env），类型与范围都在这里校验。
-
-密钥读/写刻意分开：解密路径永不生成新密钥，只有人主动提交新凭据（写入）时才允许生成。
-"""
+"""配置与主密钥管理。"""
 from __future__ import annotations
 
 import base64
@@ -18,9 +15,9 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .errors import ConfigError, MasterKeyInvalidError, MasterKeyMissingError
 from .permissions import harden_dir, harden_file
+from .validate import parse_hm
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-# 配置文件；测试可通过 CSU_DK_ENV_FILE 隔离
 ENV_FILE = os.environ.get("CSU_DK_ENV_FILE", str(PROJECT_ROOT / ".env"))
 KEY_BYTES = 32
 
@@ -39,7 +36,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # 数据目录；别名仅供测试隔离
     data_dir: Path = Field(default=PROJECT_ROOT / "data", validation_alias="CSU_DK_TEST_DATA_DIR")
     host: str = "127.0.0.1"
     port: int = Field(default=8443, ge=1, le=65535)
@@ -48,7 +44,7 @@ class Settings(BaseSettings):
     session_days: int = Field(default=14, ge=1, le=3650)
     code_minutes: int = Field(default=10, ge=1, le=1440)
     code_cooldown_seconds: int = Field(default=60, ge=1, le=86_400, validation_alias="CSU_DK_CODE_COOLDOWN")
-    email_daily_max: int = Field(default=5, ge=1, le=1000)
+    email_daily_max: int = Field(default=10, ge=1, le=1000)
     allowed_emails: Annotated[tuple[str, ...], NoDecode] = ()
     max_accounts_per_user: int = Field(default=5, ge=1, le=100, validation_alias="CSU_DK_MAX_ACCOUNTS")
     max_sessions_per_user: int = Field(default=10, ge=1, le=100, validation_alias="CSU_DK_MAX_SESSIONS")
@@ -56,29 +52,35 @@ class Settings(BaseSettings):
 
     cas_concurrency: int = Field(default=1, ge=1, le=8)
     relogin_cooldown_seconds: int = Field(default=60, ge=1, le=86_400, validation_alias="CSU_DK_RELOGIN_COOLDOWN")
+    cas_login_per_minute: int = Field(default=8, ge=0, le=600,
+                                      validation_alias="CSU_DK_CAS_LOGIN_PER_MINUTE")
+    cas_attempt_gap_seconds: int = Field(default=15, ge=0, le=3600,
+                                         validation_alias="CSU_DK_CAS_ATTEMPT_GAP")
 
     scheduler_interval: int = Field(default=20, ge=1, le=3600, validation_alias="CSU_DK_SCHED_INTERVAL")
     maintenance_interval: int = Field(default=600, ge=1, le=86_400)
     token_ttl_seconds: int = Field(default=86_400, ge=1, le=604_800, validation_alias="CSU_DK_TOKEN_TTL")
     ip_freeze_cooldown_seconds: int = Field(default=3600, ge=1, le=604_800,
                                             validation_alias="CSU_DK_IP_FREEZE_COOLDOWN")
-    catchup_minutes: int = Field(default=120, ge=1, le=1440)
-    max_window_hours: int = Field(default=6, ge=1, le=24, validation_alias="CSU_DK_MAX_WINDOW")
-    window_margin_minutes: int = Field(default=60, ge=0, le=1440, validation_alias="CSU_DK_WINDOW_MARGIN")
-    default_window_start: str = "20:00"
-    default_window_end: str = "22:30"
+    cred_fail_max: int = Field(default=3, ge=1, le=100, validation_alias="CSU_DK_CRED_FAIL_MAX")
+    cred_fail_max_user: int = Field(default=6, ge=1, le=1000,
+                                    validation_alias="CSU_DK_CRED_FAIL_MAX_USER")
+    cred_fail_max_ip: int = Field(default=10, ge=1, le=1000,
+                                  validation_alias="CSU_DK_CRED_FAIL_MAX_IP")
+    cred_fail_cooldown_seconds: int = Field(default=900, ge=1, le=86_400,
+                                           validation_alias="CSU_DK_CRED_FAIL_COOLDOWN")
+    checkin_window_start: str = "20:00"
+    checkin_window_end: str = "23:30"
 
     trust_proxy: bool = False
+    outbound_proxy: str = Field(default="", validation_alias="CSU_DK_PROXY")
     cookie_secure: bool = False
 
     rl_ip_window: int = Field(default=86_400, ge=1)
-    rl_ip_max: int = Field(default=5, ge=1)
-    rl_global_window: int = Field(default=86_400, ge=1)
-    rl_global_max: int = Field(default=200, ge=1)
+    rl_ip_max: int = Field(default=20, ge=1)
     rl_verify_window: int = Field(default=1800, ge=1)
     rl_verify_max: int = Field(default=15, ge=1)
 
-    # 腾讯云邮件推送
     tencent_ses_secret_id: str = Field(default="", validation_alias="TENCENT_SES_SECRET_ID")
     tencent_ses_secret_key: str = Field(default="", validation_alias="TENCENT_SES_SECRET_KEY")
     tencent_ses_region: str = Field(default="ap-hongkong", validation_alias="TENCENT_SES_REGION")
@@ -89,7 +91,6 @@ class Settings(BaseSettings):
     @field_validator("tencent_ses_template_id", mode="before")
     @classmethod
     def _blank_template_id(cls, value: object) -> object:
-        # 空模板 ID 视为未配置
         return 0 if value in ("", None) else value
 
     @field_validator("allowed_emails", mode="before")
@@ -118,25 +119,24 @@ class Settings(BaseSettings):
             raise ValueError(f"CSU_DK_TZ 不是合法时区：{value}") from error
         return value
 
+    @field_validator("checkin_window_start", "checkin_window_end")
+    @classmethod
+    def _valid_checkin_time(cls, value: str) -> str:
+        parse_hm(value)
+        return value
+
     @model_validator(mode="after")
     def _consistency(self) -> Settings:
         if not self.host.strip():
             raise ValueError("CSU_DK_HOST 不能为空")
-        if self.window_margin_minutes >= self.max_window_hours * 60:
-            raise ValueError("CSU_DK_WINDOW_MARGIN 不能大于等于 CSU_DK_MAX_WINDOW（会把窗口压到最小 30 分钟）")
-        for name in ("rl_ip_window", "rl_global_window", "rl_verify_window"):
+        for name in ("rl_ip_window", "rl_verify_window"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} 至少 1 秒")
         return self
 
-    # 限流配置
     @property
     def request_ip(self) -> Limit:
         return Limit(self.rl_ip_window * 1000, self.rl_ip_max)
-
-    @property
-    def request_global(self) -> Limit:
-        return Limit(self.rl_global_window * 1000, self.rl_global_max)
 
     @property
     def verify_ip(self) -> Limit:

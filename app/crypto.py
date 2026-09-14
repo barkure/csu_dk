@@ -1,4 +1,4 @@
-"""AES-256-GCM 落库加密。密文格式与 Node 版逐字节兼容：v1.<base64(iv)>.<base64(ct||tag)>。"""
+"""AES-256-GCM 凭据加密。"""
 from __future__ import annotations
 
 import base64

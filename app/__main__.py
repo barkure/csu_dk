@@ -1,20 +1,15 @@
-"""入口：python -m app [db-init | db-check | db-import --from 旧库]
-
-服务按**单进程**设计：调度器、账号锁、CAS 并发闸门、限流都在进程内，
-所以没有 web / worker 这类子命令 —— 拆开跑会让这些保护失效。
-"""
+"""命令行入口。"""
 from __future__ import annotations
 
 import socket
 import sys
 
-COMMANDS = ("all", "db-init", "db-check", "db-import")
+COMMANDS = ("all", "db-init", "db-check")
 
 USAGE = """用法：python -m app [子命令]
 
   db-init                 按最新结构建库（已存在则只核对结构）
   db-check                核对当前库结构
-  db-import --from 旧库    把旧库数据导入当前库，并校验密文能否解开
   不带子命令                启动服务（HTTP + 调度器同进程）
 """
 
@@ -56,12 +51,10 @@ def _run() -> None:
 
 
 def _run_db(command: str, argv: list[str]) -> int:
-    import pathlib
-
     from . import config as cfg
 
     try:
-        from . import dbtools  # 导入 db 时会核对结构，不符则在这里抛出
+        from . import dbtools
     except RuntimeError as error:
         print(f"数据库：{cfg.DB_PATH}")
         print(f"  {error}")
@@ -78,22 +71,9 @@ def _run_db(command: str, argv: list[str]) -> int:
         if ok:
             print("  结构核对通过")
             return 0
-        print(f"  结构不符（缺少 {'、'.join(missing)}）")
-        print("  请按最新结构重建数据库后再导入旧数据")
+        print(f"  结构不符（{'、'.join(missing)}）")
+        print("  请删除旧数据库并重新启动")
         return 1
-
-    index = argv.index("--from") if "--from" in argv else -1
-    if index < 0 or index + 1 >= len(argv) or argv[index + 1].startswith("-"):
-        print("db-import 需要 --from 旧库路径", file=sys.stderr)
-        print(USAGE, file=sys.stderr)
-        return 2
-    source = pathlib.Path(argv[index + 1]).expanduser()
-    print(f"来源库：{source}")
-    print(f"目标库：{cfg.DB_PATH}")
-    report = dbtools.import_from(source)
-    for key, value in report.items():
-        print(f"  {key}: {value if not isinstance(value, list) else ('、'.join(value) or '—')}")
-    return 1 if report["unreadable"] else 0
 
 
 def main() -> None:

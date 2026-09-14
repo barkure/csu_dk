@@ -1,4 +1,4 @@
-"""FastAPI 应用：JSON 接口（给测试与程序化调用）+ 网页界面（Jinja2 + htmx）。"""
+"""FastAPI 应用。"""
 from __future__ import annotations
 
 import pathlib
@@ -18,17 +18,10 @@ from .clock import local_now, to_local_iso
 from .domain import Trigger
 from .errors import AppError, RateLimitError, friendly_message
 from .mailer import mailer_enabled
-from .scheduler import (
-    schedule_next,
-    schedule_next_after,
-    start_scheduler,
-    stop_scheduler,
-)
+from .scheduler import start_scheduler, stop_scheduler
 from .startup import run_startup_checks
 
 
-# 请求体上限：只挡带 Content-Length 的请求；不带该头的分块请求拿不到提前拒绝，
-# 真正对外时由前置反向代理限制请求体大小
 class RequestCodeBody(BaseModel):
     email: str = ""
 
@@ -39,14 +32,8 @@ class VerifyBody(BaseModel):
 
 
 class AccountBody(BaseModel):
-    """新增/编辑账号的请求体（网页表单走另一条路径，这里只服务 JSON 接口）。"""
-
     csuUsername: str = ""
     password: str | None = None
-    jd: float | None = None
-    wd: float | None = None
-    windowStart: str | None = None
-    windowEnd: str | None = None
     enabled: bool | None = None
     runNow: bool = False
 
@@ -80,14 +67,9 @@ def _public_account(account: dict) -> dict:
         "id": account["id"],
         "csuUsername": account["csu_username"],
         "enabled": bool(account["enabled"]),
-        "needsReauth": bool(account["needs_reauth"]),
-        "windowStart": account["window_start"],
-        "windowEnd": account["window_end"],
-        "jd": account["jd"],
-        "wd": account["wd"],
+        "needsReauth": bool(account["auth_error"]),
         "dkdz": account["dkdz"] or "",
         "online": has_fresh_login(account),
-        "nextRunAt": account["next_run_at"],
         "lastRunAt": account["last_run_at"],
         "lastStatus": account["last_status"],
         "lastMessage": account["last_message"],
@@ -121,7 +103,7 @@ app.include_router(ui.router)
 
 def _json_error(request: Request, message: str, status: int, *, code: str = "",
                 headers: dict | None = None) -> JSONResponse:
-    """出错一律回 JSON；htmx 请求额外声明“这不是可替换的内容”，免得 JSON 被写进页面。"""
+    """返回 JSON 错误，并阻止 htmx 替换页面。"""
     extra = dict(headers or {})
     if request.headers.get("hx-request"):
         extra["HX-Reswap"] = "none"
@@ -154,12 +136,9 @@ async def _guards(request: Request, call_next):
 
     response = await call_next(request)
     if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
-        # 页面与静态资源都不缓存：状态变了刷新即生效，不用人工维护 ?v=N
         response.headers["cache-control"] = "no-cache"
     return response
 
-
-# ---------- JSON 接口 ----------
 
 @app.get("/api/health")
 def health() -> dict:
@@ -167,7 +146,7 @@ def health() -> dict:
         "ok": True,
         "time": _now_iso(),
         "mail": mailer_enabled(),
-        "defaults": {"windowStart": cfg.config.default_window_start, "windowEnd": cfg.config.default_window_end},
+        "checkinWindow": {"start": cfg.config.checkin_window_start, "end": cfg.config.checkin_window_end},
     }
 
 
@@ -217,13 +196,11 @@ def list_accounts(request: Request) -> dict:
 def create_account(request: Request, payload: AccountBody | None = None) -> dict:
     fields = payload.model_dump() if payload else {}
     user = _current_user(request)
-    result = accounts_service.create_or_update(user, fields)
+    result = accounts_service.create_or_update(user, fields, ip=netinfo.client_ip(request))
     account_id = result["account_id"]
-    schedule_next(_must_account(user["id"], account_id))
     out: dict = {"account": _public_account(_must_account(user["id"], account_id)), "verify": result["verify"]}
     if fields.get("runNow"):
         out["run"] = run_checkin(_must_account(user["id"], account_id), Trigger.MANUAL)
-        schedule_next_after(_must_account(user["id"], account_id), out["run"])
         out["account"] = _public_account(_must_account(user["id"], account_id))
     return out
 
@@ -231,8 +208,8 @@ def create_account(request: Request, payload: AccountBody | None = None) -> dict
 @app.patch("/api/accounts/{account_id}")
 def patch_account(request: Request, account_id: int, payload: AccountBody | None = None) -> dict:
     user = _current_user(request)
-    accounts_service.update(user, account_id, payload.model_dump() if payload else {})
-    schedule_next(_must_account(user["id"], account_id))
+    accounts_service.update(user, account_id, payload.model_dump() if payload else {},
+                            ip=netinfo.client_ip(request))
     return {"account": _public_account(_must_account(user["id"], account_id))}
 
 
@@ -249,7 +226,6 @@ def run_now(request: Request, account_id: int) -> dict:
     user = _current_user(request)
     account = _must_account(user["id"], account_id)
     result = run_checkin(account, Trigger.MANUAL)
-    schedule_next_after(_must_account(user["id"], account_id), result)
     return {"result": result, "account": _public_account(_must_account(user["id"], account_id))}
 
 
@@ -258,9 +234,7 @@ def do_relogin(request: Request, account_id: int) -> dict:
     user = _current_user(request)
     account = _must_account(user["id"], account_id)
 
-    result = relogin(account)
-    if result["ok"]:
-        schedule_next(_must_account(user["id"], account_id))
+    result = relogin(account, ip=netinfo.client_ip(request))
     return {"result": result, "account": _public_account(_must_account(user["id"], account_id))}
 
 

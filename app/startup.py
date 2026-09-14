@@ -19,6 +19,23 @@ def _can_decrypt(account: dict) -> bool:
         return False
 
 
+def _credential_problem(accounts: list[dict]):
+    key = cfg.inspect_master_key()
+    if not accounts:
+        return key, None, [], cfg.ensure_master_key()
+    if not key.exists:
+        return key, f"加密密钥不存在：{cfg.MASTER_KEY_PATH}", accounts, False
+    if not key.valid:
+        warn_block([
+            f"⚠️  加密密钥内容非法：{cfg.MASTER_KEY_PATH}（{key.detail}）",
+            "    已拒绝启动。放回正确的密钥，或先把它移走再重启。",
+        ])
+        raise MasterKeyInvalidError(cfg.MASTER_KEY_PATH, key.detail)
+    affected = [account for account in accounts if not _can_decrypt(account)]
+    reason = f"{len(affected)}/{len(accounts)} 个账号的密文无法解密（密钥不匹配或数据损坏）" if affected else None
+    return key, reason, affected, False
+
+
 def run_startup_checks() -> dict:
     report = {"chmod": [], "key_created": False, "flagged": [], "key_missing": False}
 
@@ -33,30 +50,12 @@ def run_startup_checks() -> dict:
         ])
     ]
 
-    accounts = db.all_accounts_raw()  # 清点账号时不能碰解密
-    key = cfg.inspect_master_key()
+    accounts = db.all_accounts_raw()
+    key, reason, affected, created = _credential_problem(accounts)
     report["key_missing"] = not key.exists
-
-    reason = None
-    affected: list[dict] = []
-    if not accounts:
-        report["key_created"] = cfg.ensure_master_key()
-    elif not key.exists:
-        reason = f"加密密钥不存在：{cfg.MASTER_KEY_PATH}（不会自动生成，以免覆盖旧数据）"
-        affected = accounts
-    elif not key.valid:
-        warn_block([
-            f"⚠️  加密密钥内容非法：{cfg.MASTER_KEY_PATH}（{key.detail}）",
-            "    已拒绝启动。放回正确的密钥，或先把它移走再重启。",
-        ])
-        raise MasterKeyInvalidError(cfg.MASTER_KEY_PATH, key.detail)
-    else:
-        affected = [account for account in accounts if not _can_decrypt(account)]
-        if affected:
-            reason = f"{len(affected)}/{len(accounts)} 个账号的密文无法解密（密钥不匹配或数据损坏）"
+    report["key_created"] = created
 
     if reason:
-        # 重启不清除认证故障
         for account in affected:
             kind = account.get("auth_error") or "other"
             if db.set_auth_error(account["id"], kind):
