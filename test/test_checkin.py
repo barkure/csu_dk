@@ -1,6 +1,7 @@
 """打卡引擎与调度：登录态新鲜度、楼栋名补全、排期规则。"""
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta
 
 import pytest
@@ -190,6 +191,18 @@ def test_address_written_when_live_request_returns_it(user, monkeypatch):
     assert db.get_account_by_id(account["id"])["dkdz"] == "升华8栋"
 
 
+def test_random_point_within_radius(monkeypatch):
+    values = iter((0.25, 0.0))
+    monkeypatch.setattr(checkin.random, "random", lambda: next(values))
+
+    jd, wd = checkin._random_point_within_radius(112.936833, 28.157238)
+
+    assert wd == pytest.approx(28.157238)
+    assert jd == pytest.approx(
+        112.936833 + math.degrees(50 / (6_371_000 * math.cos(math.radians(28.157238))))
+    )
+
+
 class EngineClient:
     """打卡引擎的假客户端：覆盖 run_checkin 的每条分支。"""
 
@@ -201,12 +214,14 @@ class EngineClient:
         self._submit = submit
         self._after = after
         self.submitted = None
+        self.checked = []
 
     def dk_status(self, dklb="PA"):
         # 第一次返回 _status，提交后（复核）返回 _after
         return {"code": "200", "data": self._after if self.submitted and self._after else self._status}
 
     def check_location(self, jd, wd, dklb="PA"):
+        self.checked.append((jd, wd))
         return {"code": "200", "data": self._location or {}}
 
     def submit_dk(self, **kwargs):
@@ -268,10 +283,14 @@ def test_engine_success_stores_address(user, monkeypatch):
         after={"sfydk": 1, "dksj": "2026-09-12 21:02:00"},
     )
     account = engine_account(user, monkeypatch, client)
+    monkeypatch.setattr(checkin, "_random_point_within_radius", lambda _jd, _wd: (113.0, 28.2))
     result = engine_status(account)
 
     assert result["status"] == "success"
     assert result["dksj"] == "2026-09-12 21:02:00"
+    assert client.checked == [(account["jd"], account["wd"])]
+    assert client.submitted["jd"] == 113.0
+    assert client.submitted["wd"] == 28.2
     assert client.submitted["dkdz"] == "升华8栋"       # 提交的地址来自学校按坐标返回的楼栋名
     assert client.submitted["dkbc"] == "校内住宿打卡"
     assert db.get_account_by_id(account["id"])["dkdz"] == "升华8栋"

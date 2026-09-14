@@ -1,6 +1,8 @@
 """打卡引擎：登录态维护 + 执行一次打卡。"""
 from __future__ import annotations
 
+import math
+import random
 import re
 import threading
 import time
@@ -25,6 +27,20 @@ _cas_gate = threading.Semaphore(cfg.config.cas_concurrency)
 
 NEEDS_RECREDENTIALS = re.compile(r"密码错误|用户名或密码|未激活|锁定|验证码|无法解密")
 _CREDENTIAL_ERRORS = (SecretDecryptError, MasterKeyMissingError, MasterKeyInvalidError)
+_EARTH_RADIUS_METERS = 6_371_000.0
+_CHECKIN_RADIUS_METERS = 100.0
+
+
+def _random_point_within_radius(jd: float, wd: float) -> tuple[float, float]:
+    distance = _CHECKIN_RADIUS_METERS * math.sqrt(random.random())
+    angle = math.tau * random.random()
+    north_m = distance * math.sin(angle)
+    east_m = distance * math.cos(angle)
+    latitude_rad = math.radians(wd)
+    return (
+        jd + math.degrees(east_m / (_EARTH_RADIUS_METERS * math.cos(latitude_rad))),
+        wd + math.degrees(north_m / _EARTH_RADIUS_METERS),
+    )
 
 
 def assert_login_allowed() -> None:
@@ -307,9 +323,10 @@ def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
                     f"（距 {location.get('yxMc') or '?'} {location.get('pcMi') or '?'} 米）"
                 )
             else:
+                submit_jd, submit_wd = _random_point_within_radius(account["jd"], account["wd"])
                 result = client.submit_dk(
-                    jd=account["jd"],
-                    wd=account["wd"],
+                    jd=submit_jd,
+                    wd=submit_wd,
                     dkbc=data.get("dkbc") or "",
                     dkdz=location.get("yxMc") or account.get("dkdz") or "",
                 )
