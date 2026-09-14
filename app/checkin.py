@@ -20,7 +20,7 @@ from .ratelimit import SlidingWindow
 from .validate import apply_window_margin, parse_window_text
 
 _login_paused_until = 0.0
-# 学校风控按出口 IP 判定，所以密码登录全局串行（班次/位置查询不经过这里）
+# CAS 密码登录全局串行
 _cas_gate = threading.Semaphore(cfg.config.cas_concurrency)
 
 NEEDS_RECREDENTIALS = re.compile(r"密码错误|用户名或密码|未激活|锁定|验证码|无法解密")
@@ -69,9 +69,9 @@ def probe_window(username: str, password: str, jd: float | None = None, wd: floa
     allowed = parse_window_text(data.get("dksjfw"))
     return {
         "location": location,
-        # 只用这一次实时请求的结果：不在打卡时段内时学校不按坐标给楼栋名，那就先空着
+        # 楼栋名仅采用实时结果
         "address": (location or {}).get("yxMc"),
-        # 本次验证已经登录成功，把登录态带回落库，免得卡片显示未登录、当晚再登一次
+        # 复用本次验证产生的登录态
         "session": {
             "token": client.token or "",
             "casual": client.casual,
@@ -122,7 +122,7 @@ def fill_address(account: dict) -> str | None:
     return None
 
 
-# 四种账号状态里除"正常"以外的三种都由这里产出；页面只显示这个类型，详细原因进日志
+# 认证故障分类；详情仅写入日志
 _CAS_FAILURE_KINDS = {
     "badCredentials": AuthError.BAD_CREDENTIALS,   # 学校明确说用户名或密码错误
     "locked": AuthError.LOCKED,                    # 学校明确说账号被锁定
@@ -149,23 +149,22 @@ def _failure_kind(error: Exception, message: str) -> AuthError | None:
     return _CAS_FAILURE_KINDS.get(classify_cas_error(message) or "")
 
 
-# 日志的脱敏规则只看"键名"，不看值：异常文本里可能夹着 token / cookie / JWT，
-# 所以这里按"长得像密钥"的形态擦掉，再截断长度。
+# 清理异常文本中的 token、Cookie 和 JWT
 _SECRET_KEYS = r"CASTGC|JSESSIONID|authorization|token|password|passwd|pwd|cookies?|secret|casual"
 # 值可能被引号包起来（JSON / Set-Cookie 都有这种形态）
 _QUOTABLE_KEYS = rf"(?:{_SECRET_KEYS}|set-cookie)"
 _SECRET_IN_TEXT = re.compile(
-    # 规则按"最具体 → 最宽泛"排列：先来的先匹配，排错顺序就会出现"擦一半、留一半"
+    # 按具体程度降序匹配
     r"eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}"      # JWT（base64 的 {" 固定以 eyJ 开头）
     r"|[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{10,}"    # 其它三段式凭据
     r"|v1\.[A-Za-z0-9+/=_\-.]{8,}"                                        # 本地密文
     r"|(?i:bearer)\s+[A-Za-z0-9._\-]+"                                     # Authorization: Bearer xxx
-    # 带引号的值整串吃掉（可含空格、逗号、右括号、转义），必须排在宽泛规则之前
+    # 带引号的完整值
     rf"|[\"']?(?:{_QUOTABLE_KEYS})[\"']?\s*[=:]\s*\"(?:[^\"\\]|\\.)*\""
     rf"|[\"']?(?:{_QUOTABLE_KEYS})[\"']?\s*[=:]\s*'(?:[^'\\]|\\.)*'"
-    # Cookie/请求头：没引号时值可能带空格与分号（a=b; c=d），吃到逗号/右括号/换行为止
+    # 未加引号的 Cookie 或请求头
     r"|[\"']?(?:set-cookie|castgc|jsessionid|cookies?|authorization)[\"']?\s*[=:]\s*[^,，。)\n]+"
-    # 其余单值键：值是没引号的单段
+    # 其他单值字段
     rf"|[\"']?(?:{_SECRET_KEYS})[\"']?\s*[=:]\s*[\"']?[^\s\"'&,，。;；)\n]+"
     r"|(?<=[?&])[A-Za-z0-9_]+=[^\s&,，。;；]+",                             # URL 查询串里的值
     re.IGNORECASE,
@@ -234,8 +233,7 @@ def _locked(account: dict, fn):
         return fn(db.get_account_by_id(account["id"]) or account)
 
 
-# 「重新上号」每次都真的登录一次学校，所以按账号限流（默认 60 秒一次）。
-# 放在服务层：网页与 JSON 接口共用同一把闸门，不能只在某一条路由上做。
+# 重新认证按账号限流，供网页与 JSON API 共用
 _relogin_limiter = SlidingWindow(cfg.config.relogin_cooldown_seconds * 1000, 1)
 
 
@@ -264,8 +262,7 @@ def run_checkin(account: AccountRow | dict, trigger: Trigger | str = Trigger.SCH
 def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
     run_at = to_local_iso(local_now(cfg.config.tz))
     status, message, dksj = CheckinStatus.FAILED, "", None
-    # 只有"正在登录"那几行的失败才可能改变账号状态。默认算打卡阶段：
-    # 停用、班次查询、位置校验、提交这些环节出的问题一律只留在执行记录里。
+    # 仅登录阶段故障改变账号状态
     stage = "checkin"
 
     try:

@@ -133,7 +133,7 @@ def fill_missing_addresses(now) -> None:
 
 def maintenance() -> None:
     now = local_now(cfg.config.tz)
-    # 和 tick 一样先看租约：这台进程不持有租约时，补楼栋名会真的去登录学校
+    # 仅租约持有者执行维护
     if _lease_owner and not _holds_lease(now):
         return
 
@@ -163,7 +163,7 @@ def _holds_lease(now: datetime, announce: bool = True) -> bool:
     stale_before = to_local_iso(now - timedelta(seconds=lease_stale_seconds()))
     if db.acquire_scheduler_lease(_lease_owner, now_iso, stale_before):
         if announce:
-            # 只有运行中接管才值得报；启动时由 start_scheduler 统一报"获得/未获得"
+            # 仅记录运行期间的租约接管
             print("[scheduler] 已接管调度租约", flush=True)
         return True
     return False
@@ -179,7 +179,7 @@ def _bootstrap_once() -> None:
 
 def tick() -> None:
     now = local_now(cfg.config.tz)
-    # 只有正常启动过调度器的进程才受租约约束（直接调用 tick 的场景，例如测试，不受影响）
+    # 直接调用 tick 时不检查租约
     if _lease_owner and not _holds_lease(now):
         return
     for account in db.due_accounts(to_local_iso(now)):
@@ -201,7 +201,7 @@ def tick() -> None:
             account_id=account["id"],
             csu_username_tail=str(account["csu_username"])[-4:],
             status=result["status"],
-            # 错误文案来自学校，可能夹着凭据：按形态擦一遍再进日志
+            # 上游错误脱敏后入库
             message=scrub_detail(result["message"]),
         )
 
@@ -216,17 +216,16 @@ def tick() -> None:
 
 def start_scheduler() -> BackgroundScheduler | None:
     global _scheduler, _lease_owner
-    # 多进程（uvicorn --workers > 1）时只让一个进程跑调度：否则同一账号会被重复执行。
-    # 抢到租约才 bootstrap（修正排期），否则多进程启动时每个进程都会去改调度状态。
+    # 仅租约持有者启动并校准调度
     _lease_owner = f"{socket.gethostname()}:{os.getpid()}"
     if _holds_lease(local_now(cfg.config.tz), announce=False):
         print(f"[scheduler] 已获得调度租约（{_lease_owner}）", flush=True)
     else:
-        # 定时器照常起：每轮 tick 都会再试，租约一过期就自动接管
+        # 后续 tick 可接管过期租约
         print("[scheduler] 已有进程持有调度租约，本进程暂不执行打卡（租约失效后会自动接管）", flush=True)
 
     _scheduler = BackgroundScheduler(daemon=True)
-    # max_instances=1 + coalesce：上一轮没跑完就跳过，不叠加
+    # 跳过重叠任务
     _scheduler.add_job(tick, "interval", seconds=cfg.config.scheduler_interval,
                        id="tick", max_instances=1, coalesce=True)
     _scheduler.add_job(maintenance, "interval", seconds=cfg.config.maintenance_interval,

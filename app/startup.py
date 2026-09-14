@@ -56,8 +56,7 @@ def run_startup_checks() -> dict:
             reason = f"{len(affected)}/{len(accounts)} 个账号的密文无法解密（密钥不匹配或数据损坏）"
 
     if reason:
-        # 重启不解除故障：解不开密码的账号一律继续保持暂停，等人工重新提交密码
-        # （Cookie 没过期不算认证成功，也不能作为恢复依据）。已记过具体原因的保留原类型。
+        # 重启不清除认证故障
         for account in affected:
             kind = account.get("auth_error") or "other"
             if db.set_auth_error(account["id"], kind):

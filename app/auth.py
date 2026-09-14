@@ -143,9 +143,7 @@ def verify_login_code(email: object, code: object, ip: str = "unknown",
         return VerifyResult(False, reason="验证码不正确")
 
     now = local_now(cfg.config.tz)
-    # 消费验证码、建用户、建会话放在同一个事务里：要么都成，要么都不成。
-    # 消费本身是原子的（并发时只有一个请求能把 used 改成 1），但若它单独提交，
-    # 后面建会话失败就会留下"验证码已作废、用户没登录"的残局。
+    # 原子完成验证码消费、用户创建和会话创建
     with db.transaction():
         if not db.consume_login_code(row["id"], MAX_CODE_ATTEMPTS):
             return VerifyResult(False, reason="验证码已被使用，请重新获取")

@@ -91,7 +91,7 @@ def ui_code(request: Request, email: str = Form("")):
     try:
         result = auth.request_login_code(email, netinfo.client_ip(request))
     except RateLimitError as error:
-        # 带上剩余秒数让按钮继续倒计时；否则冷却期内按钮可反复点，消息会越堆越多
+        # 返回剩余冷却时间
         return _render(request, "partials/login_form.html",
                        {**context, "sent": True, "msg": error.message, "msg_kind": "err",
                         "cooldown": error.retry_after_sec})
@@ -103,7 +103,7 @@ def ui_code(request: Request, email: str = Form("")):
     if result.get("sent"):
         context["msg"] = "验证码已发送，请查收邮件"
     else:
-        # 未配 Resend 的本地调试模式：直接把验证码填上
+        # 本地调试时回填验证码
         context.update(msg=f"本地调试模式，验证码：{result.get('dev_code', '')}", code=result.get("dev_code", ""))
     return _render(request, "partials/login_form.html", context)
 

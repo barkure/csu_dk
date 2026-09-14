@@ -20,7 +20,7 @@ from .errors import ConfigError, MasterKeyInvalidError, MasterKeyMissingError
 from .permissions import harden_dir, harden_file
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-# 默认读项目里的 .env；测试用 CSU_DK_ENV_FILE 指向一个不存在的文件来隔离真实配置
+# 配置文件；测试可通过 CSU_DK_ENV_FILE 隔离
 ENV_FILE = os.environ.get("CSU_DK_ENV_FILE", str(PROJECT_ROOT / ".env"))
 KEY_BYTES = 32
 
@@ -39,8 +39,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # 数据目录固定为项目内的 data/。这个别名校验只给测试用：
-    # 用例必须写到临时目录，绝不能碰项目里真实的 data/
+    # 数据目录；别名仅供测试隔离
     data_dir: Path = Field(default=PROJECT_ROOT / "data", validation_alias="CSU_DK_TEST_DATA_DIR")
     host: str = "127.0.0.1"
     port: int = Field(default=8443, ge=1, le=65535)
@@ -79,7 +78,7 @@ class Settings(BaseSettings):
     rl_verify_window: int = Field(default=1800, ge=1)
     rl_verify_max: int = Field(default=15, ge=1)
 
-    # 腾讯云邮件推送（SES）：四项都配上才真发信，缺一项就把验证码打到日志
+    # 腾讯云邮件推送
     tencent_ses_secret_id: str = Field(default="", validation_alias="TENCENT_SES_SECRET_ID")
     tencent_ses_secret_key: str = Field(default="", validation_alias="TENCENT_SES_SECRET_KEY")
     tencent_ses_region: str = Field(default="ap-hongkong", validation_alias="TENCENT_SES_REGION")
@@ -90,7 +89,7 @@ class Settings(BaseSettings):
     @field_validator("tencent_ses_template_id", mode="before")
     @classmethod
     def _blank_template_id(cls, value: object) -> object:
-        # .env 里写成空值时不能炸，按“没配”处理
+        # 空模板 ID 视为未配置
         return 0 if value in ("", None) else value
 
     @field_validator("allowed_emails", mode="before")
@@ -130,7 +129,7 @@ class Settings(BaseSettings):
                 raise ValueError(f"{name} 至少 1 秒")
         return self
 
-    # 限流的三层配置（保持调用方写 config.request_ip.max 这种读法）
+    # 限流配置
     @property
     def request_ip(self) -> Limit:
         return Limit(self.rl_ip_window * 1000, self.rl_ip_max)

@@ -3,6 +3,7 @@ name = "csu-dk"
 version = "0.1.0"
 description = "中南大学妙妙道具：邮箱验证码登录，托管学号密码，每天随机时刻自动打卡"
 requires-python = ">=3.12"
+license = "MIT"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",

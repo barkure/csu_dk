@@ -29,8 +29,7 @@ def available() -> bool:
     return _load() is not None
 
 
-# CAS 的验证码是 4-6 位字母数字。识别结果长度不在这个区间，就是这次没认出来：
-# 提交一个明显不对的验证码等于白喂学校一次失败登录，风控不划算。
+# CAS 验证码为 4–6 位字母或数字
 MIN_LENGTH = 4
 MAX_LENGTH = 6
 

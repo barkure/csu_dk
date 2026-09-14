@@ -67,13 +67,12 @@ def import_from(source: Path) -> dict:
     source_conn.row_factory = sqlite3.Row
     report: dict[str, int] = {}
     try:
-        # 全部搬运放在同一个事务里：中途任何一张表出错都整体回滚，
-        # 不能留下"导入了一半"的库。
+        # 导入失败时整体回滚
         with db.transaction():
             for table, columns in _TABLES:
                 rows = source_conn.execute(f"SELECT {', '.join(columns)} FROM {table}").fetchall()
                 report[table] = len(rows)
-                # 先清空再插入：导入是"重建"，来源为空时目标表也必须被清空
+                # 重建目标表
                 db._exec(f"DELETE FROM {table}")
                 if not rows:
                     continue

@@ -46,10 +46,7 @@ def transaction() -> Iterator[None]:
 
 
 # ---------- 结构与建表 ----------
-# 没有版本号、没有迁移链：数据升级的方式是"按这份结构建新库 + 导入旧数据"。
-# 所以这里只做两件事：建表（新库一次建好）、核对结构（不符就明确报错，
-# 而不是等运行时才炸 "no such column"）。
-# 结构定义在 schema.sql 里（建表与核对都用它，DB 工具也读同一份）
+# 无迁移链：按 schema.sql 建库或校验结构
 _SCHEMA = (pathlib.Path(__file__).with_name("schema.sql")).read_text()
 
 
@@ -81,8 +78,7 @@ def _reference_structure() -> dict[str, set[str]]:
 def _ensure_schema(conn: sqlite3.Connection | None = None) -> None:
     conn = conn if conn is not None else _conn
 
-    # 先核对已有库，再执行 DDL：建索引会用到新列，顺序反了就会先抛出
-    # "no such column"，用户看到的是 SQL 报错而不是下面这条明确提示。
+    # 先校验，避免索引 DDL 掩盖缺列错误
     existing = _structure(conn)
     if existing:
         missing = missing_structure(_reference_structure(), existing)
@@ -329,7 +325,7 @@ def update_account(account_id: int, fields: dict) -> None:
     if not keys:
         return
     sealed = _seal(fields)
-    # 列名来自 _UPDATABLE 白名单（不是用户输入），值一律走参数绑定
+    # 列名来自白名单，值使用参数绑定
     assignments = ", ".join(f"{key} = :{key}" for key in keys)
     params = {key: sealed[key] for key in keys}
     params["id"] = account_id

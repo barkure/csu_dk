@@ -64,7 +64,7 @@ def _create_or_update_locked(user: dict, payload: dict) -> dict:
     try:
         probe = _probe(csu_username, password, existing, jd, wd)
     except AppError as error:
-        # 编辑已有账号时验证失败：按原因记下账号状态（新建的还没落库，无从记录）
+        # 记录已有账号的验证故障
         if existing:
             mark_auth_failure(existing["id"], error.__cause__ or error, error.message)
         raise
@@ -75,14 +75,14 @@ def _create_or_update_locked(user: dict, payload: dict) -> dict:
     validate_window(window_start, window_end, cfg.config.max_window_hours)
 
     fields = {
-        # 不传 enabled 时：编辑保持原状，新建默认开启（漏掉新建分支会直接 TypeError）
+        # 编辑保持原状态，新建默认启用
         "enabled": (existing["enabled"] if existing else 1) if payload.get("enabled") is None
         else (0 if payload["enabled"] is False else 1),
         "window_start": window_start,
         "window_end": window_end,
         "jd": jd,
         "wd": wd,
-        # 地址只认这一次实时请求拿到的楼栋名；拿不到就留空
+        # 地址仅采用实时结果
         "dkdz": (probe or {}).get("address") or (existing or {}).get("dkdz") or "",
         "updated_at": _now_iso(),
     }
@@ -144,7 +144,7 @@ def update(user: dict, account_id: int, payload: dict) -> dict:
     except (TypeError, ValueError) as error:
         raise BadRequestError("经纬度必须是有效数字", "invalid_coord") from error
 
-    # 楼栋名是学校按坐标返回的：坐标换了就不该再显示旧的（否则"新坐标 + 旧楼栋"很误导）
+    # 坐标变化时清除旧楼栋名
     coords_changed = (
         ("jd" in fields and fields["jd"] != account["jd"])
         or ("wd" in fields and fields["wd"] != account["wd"])
@@ -152,7 +152,7 @@ def update(user: dict, account_id: int, payload: dict) -> dict:
     if coords_changed and account["dkdz"]:
         fields["dkdz"] = ""
 
-    # 换密码同样"提交即验证"
+    # 新密码需立即验证
     if payload.get("password"):
         password = str(payload["password"])
         try:
@@ -169,7 +169,7 @@ def update(user: dict, account_id: int, payload: dict) -> dict:
                 "token": probe["session"]["token"], "casual": probe["session"]["casual"],
                 "cookies": probe["session"]["cookies"], "token_at": _now_iso(),
             })
-        # 有学校给的新地址就用它（坐标换了更是必须换）；没给才留旧的
+        # 优先采用实时地址
         if probe.get("address") and (coords_changed or not account["dkdz"]):
             fields["dkdz"] = probe["address"]
         if not fields.get("window_start") and probe.get("window"):

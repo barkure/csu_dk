@@ -30,13 +30,13 @@ UA = (
 _AES_CHARS = "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678"
 _AES_LENGTHS = {16: AES, 24: AES, 32: AES}
 
-# 验证码最多试两次：每次失败登录都在喂学校的风控，试多了会招来 IP 冻结
+# 限制验证码重试，避免触发 IP 风控
 MAX_CAPTCHA_ATTEMPTS = 2
 
-# 验证码图片只可能是这几种格式（拿 HTML 错误页去识别只会白瞎一次登录机会）
+# 支持的验证码图片类型
 _IMAGE_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"BM", b"RIFF", b"II*\x00", b"MM\x00*")
 
-# 学校取图的固定地址（csu_tools 里验证过的那个；带时间戳防缓存）
+# 验证码接口；时间戳用于防缓存
 CAPTCHA_URL = f"{CAS_BASE}/getCaptcha.htl"
 
 
@@ -119,7 +119,7 @@ def cas_login(session: requests.Session, username: str, password: str | None,
     if frozen:
         raise frozen
 
-    # 已有有效 CAS 会话时 CAS 直接带 ticket 跳回业务系统，这时不需要（也不应该）再输密码
+    # 有效 CAS 会话可直接换取 ticket
     if not _is_cas_host(first.url):
         return first.text
 
@@ -127,7 +127,7 @@ def cas_login(session: requests.Session, username: str, password: str | None,
         raise RuntimeError("未找到 CAS 登录表单（页面结构可能变了）")
 
     if password is None:
-        # 用凭据类错误：调用方据此标记"需重新提交密码"，普通 RuntimeError 不会触发那个判定
+        # 凭据错误会触发重新提交密码状态
         raise SecretDecryptError("CAS 会话已失效，而本地保存的密码又无法解密，请在「编辑账号」里重新提交一次密码")
 
     if _needs_captcha(session, username, timeout):
@@ -208,7 +208,7 @@ def _keep_evidence(page_html: str, image: bytes | None) -> None:
 def _login_with_captcha(session: requests.Session, login_url: str, username: str,
                         password: str, timeout: int) -> str:
     for attempt in range(1, MAX_CAPTCHA_ATTEMPTS + 1):
-        # 每轮都要重新取页面：验证码图片和 execution 都会变
+        # 每轮刷新验证码和 execution
         page = session.get(login_url, headers={"user-agent": UA}, timeout=timeout)
         frozen = detect_ip_frozen(page.text)
         if frozen:
@@ -220,7 +220,7 @@ def _login_with_captcha(session: requests.Session, login_url: str, username: str
         log_event("checkin.captcha_attempt", attempt=attempt, source=source, url=url,
                   bytes=len(image or b""), recognized=bool(code), recognized_length=len(code or ""))
         if not code:
-            # 识别不出来就别提交 —— 提交一次必然是失败登录
+            # 不提交无效识别结果
             raise RuntimeError(
                 "CAS 要求输入验证码，但自动识别不可用（未安装 ddddocr 或识别失败），"
                 "请先在浏览器登录一次后再试"
@@ -254,7 +254,7 @@ def _submit_login(session: requests.Session, login_url: str, page_html: str, use
             "cllt": "userNameLogin",
             "dllt": "generalLogin",
             "lt": "",
-            # 勾上「7天免登录」：CASTGC 从会话级变成 14 天有效，跨天重建登录态时不必再交密码
+            # 延长 CASTGC 有效期
             "rememberMe": "true",
         },
         headers={"user-agent": UA, "content-type": "application/x-www-form-urlencoded"},
