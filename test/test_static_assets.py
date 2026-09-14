@@ -1,6 +1,7 @@
-"""静态资源的健壮性：JS 必须能被解析（曾经有一版脚本把块注释首行删了，页面按钮全失效）。"""
+"""静态资源的健壮性：JS 必须能被解析。"""
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -9,6 +10,25 @@ import pytest
 
 STATIC = Path(__file__).resolve().parent.parent / "app" / "static"
 OUR_SCRIPTS = ["geo.js", "login.js"]
+
+# 内置 htmx 的版本（升级时同时改这里和 README）
+HTMX_VERSION = "4.0.0"
+
+
+def test_vendored_htmx_version_is_pinned():
+    found = re.search(r'version="([0-9.]+)"', (STATIC / "htmx.min.js").read_text())
+    assert found, "内置 htmx 里找不到 version 标记"
+    assert found.group(1) == HTMX_VERSION, f"内置 htmx 是 {found.group(1)}，这里钉的是 {HTMX_VERSION}"
+
+
+def test_script_htmx_event_names_exist_in_vendored_htmx():
+    """脚本里引用的 htmx 事件名必须在内置 htmx 里存在：写错不报错，只是静默不触发。"""
+    vendor = (STATIC / "htmx.min.js").read_text()
+    used = set()
+    for name in OUR_SCRIPTS:
+        used |= set(re.findall(r"['\"](htmx:[A-Za-z:]+)['\"]", (STATIC / name).read_text()))
+    missing = sorted(e for e in used if f'"{e}"' not in vendor and f"'{e}'" not in vendor)
+    assert not missing, f"这些 htmx 事件名在内置 htmx 里不存在（版本改名了？）：{missing}"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="需要 node 做语法检查")
@@ -36,7 +56,7 @@ def test_templates_reference_existing_assets():
 
 
 def test_css_id_selectors_exist_in_templates():
-    """CSS 里按 id 定位的元素（如右上角的叉）必须在模板里真的存在 —— 移植时最容易丢的就是 id。"""
+    """CSS 里按 id 定位的元素必须在模板里真的存在。"""
     css = (STATIC / "app.css").read_text()
     ids = {
         match for match in __import__("re").findall(r"#([a-zA-Z][\w-]*)", css)
@@ -49,10 +69,7 @@ def test_css_id_selectors_exist_in_templates():
 
 
 def test_mobile_records_drop_the_year_only():
-    """窄屏的历史记录仍是三列列表，只是时间省掉年份。
-
-    之前等宽时间在 390px 下会被折成四行、年份折散；与其改排法，不如窄屏就不显示年份。
-    """
+    """移动端不显示年份：窄屏仍是三列列表，只是时间省掉年份。"""
     css = (STATIC / "app.css").read_text()
     wide, mobile = css.split("@media (max-width: 720px)")
 

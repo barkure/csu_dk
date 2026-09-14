@@ -119,28 +119,38 @@ app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="stati
 app.include_router(ui.router)
 
 
+def _json_error(request: Request, message: str, status: int, *, code: str = "",
+                headers: dict | None = None) -> JSONResponse:
+    """出错一律回 JSON；htmx 请求额外声明“这不是可替换的内容”，免得 JSON 被写进页面。"""
+    extra = dict(headers or {})
+    if request.headers.get("hx-request"):
+        extra["HX-Reswap"] = "none"
+    payload = {"error": message} | ({"code": code} if code else {})
+    return JSONResponse(payload, status_code=status, headers=extra or None)
+
+
 @app.exception_handler(AppError)
-async def _app_error(_request: Request, exc: AppError) -> JSONResponse:
-    headers = {"Retry-After": str(exc.retry_after_sec)} if isinstance(exc, RateLimitError) else None
-    return JSONResponse({"error": friendly_message(exc), "code": exc.code}, status_code=exc.status, headers=headers)
+async def _app_error(request: Request, exc: AppError) -> JSONResponse:
+    extra = {"Retry-After": str(exc.retry_after_sec)} if isinstance(exc, RateLimitError) else None
+    return _json_error(request, friendly_message(exc), exc.status, code=exc.code, headers=extra)
 
 
 @app.exception_handler(RequestValidationError)
-async def _bad_request(_request: Request, _exc: RequestValidationError) -> JSONResponse:
-    return JSONResponse({"error": "请求参数不正确", "code": "bad_request"}, status_code=400)
+async def _bad_request(request: Request, _exc: RequestValidationError) -> JSONResponse:
+    return _json_error(request, "请求参数不正确", 400, code="bad_request")
 
 
 @app.exception_handler(Exception)
-async def _unexpected(_request: Request, exc: Exception) -> JSONResponse:
+async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
     print(f"[error] {exc!r}", flush=True)
-    return JSONResponse({"error": "服务端内部错误"}, status_code=500)
+    return _json_error(request, "服务端内部错误", 500)
 
 
 @app.middleware("http")
 async def _guards(request: Request, call_next):
     length = request.headers.get("content-length")
     if length and length.isdigit() and int(length) > MAX_BODY_BYTES:
-        return JSONResponse({"error": "请求体过大（上限 64KB）", "code": "payload_too_large"}, status_code=413)
+        return _json_error(request, "请求体过大（上限 64KB）", 413, code="payload_too_large")
 
     response = await call_next(request)
     if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
@@ -180,7 +190,7 @@ def verify_code(request: Request, response: Response, payload: VerifyBody | None
         return JSONResponse({"error": result.reason}, status_code=400)
 
     response.set_cookie(auth.SESSION_COOKIE, result.token,
-                        **auth.session_cookie_options(request.headers.get("x-forwarded-proto")))
+                        **auth.session_cookie_options(request))
     return {"ok": True, "user": {"email": result.user["email"]}}
 
 

@@ -9,8 +9,10 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from fastapi import Request
+
 from . import config as cfg
-from . import db
+from . import db, netinfo
 from .clock import local_now, to_local_iso
 from .errors import BadRequestError, ForbiddenError, RateLimitError
 from .mailer import send_login_code
@@ -187,13 +189,12 @@ def destroy_session(token: str | None) -> None:
         db.delete_session(_sha256(token))
 
 
-def session_cookie_options(forwarded_proto: str | None = None) -> dict:
+def session_cookie_options(request: Request) -> dict:
     """Secure 默认关：明文 HTTP 下标了它浏览器不回传 Cookie，登录会直接失效。"""
-    via_https = cfg.config.trust_proxy and forwarded_proto == "https"
     return {
         "httponly": True,
         "samesite": "lax",
         "path": "/",
-        "secure": cfg.config.cookie_secure or via_https,
+        "secure": cfg.config.cookie_secure or netinfo.served_over_https(request),
         "max_age": cfg.config.session_days * 86_400,
     }

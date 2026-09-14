@@ -39,10 +39,10 @@
             <div class="actions">
               <button class="plain" hx-post="/ui/accounts/{{ a.id }}/run" hx-target="#accounts-card" hx-swap="outerHTML">立即打卡</button>
               <button class="plain" hx-get="/ui/form?edit={{ a.id }}" hx-target="#form-card"
-                    hx-swap="outerHTML show:window:top">编辑账号</button>
+                    hx-swap="outerHTML show:top showTarget:body">编辑账号</button>
               <button class="plain" hx-post="/ui/accounts/{{ a.id }}/relogin" hx-target="#accounts-card" hx-swap="outerHTML">重新上号</button>
               <button class="plain" hx-get="/ui/accounts/{{ a.id }}/records" hx-target="#records-card"
-                    hx-swap="outerHTML show:#records-card:top">历史记录</button>
+                    hx-swap="outerHTML show:top showTarget:#records-card">历史记录</button>
               <button class="plain danger" hx-post="/ui/accounts/{{ a.id }}/delete" hx-target="#accounts-card" hx-swap="outerHTML"
                       hx-confirm="删除这个账号及其记录？">删除账号</button>
             </div>

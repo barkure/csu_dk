@@ -75,11 +75,7 @@ def test_code_fragment_starts_cooldown_countdown(client):
 
 
 def test_message_lives_inside_the_swapped_panel(client):
-    """消息必须在被替换的容器里。
-
-    之前表单的 hx-target 是 #login-form（只换掉 <form>），而 <p class="msg"> 是它的兄弟节点，
-    每次请求都会再塞一条消息、旧的没人清 —— 于是"验证码已发送"和"请求过于频繁"同时挂在页上。
-    """
+    """消息必须在被替换的容器里，否则旧消息清不掉、会越堆越多。"""
     from bs4 import BeautifulSoup
 
     html = client.post("/ui/code", data={"email": "ui-panel@example.com"}).text
@@ -105,6 +101,24 @@ def test_logout_clears_session(client):
     ui_login(client, "ui-c@example.com")
     assert client.post("/ui/logout").status_code == 204
     assert client.get("/dashboard", follow_redirects=False).status_code == 303
+
+
+def test_session_cookie_secure_follows_the_request_scheme(client):
+    """直连 TLS（不经过反代）也算 HTTPS，否则 Cookie 会少一个 Secure。"""
+    def set_cookie(base_url: str, email: str) -> str:
+        fresh = TestClient(app, base_url=base_url)
+        code = dev_code_from(fresh.post("/ui/code", data={"email": email}).text)
+        return fresh.post("/ui/login", data={"email": email, "code": code}).headers["set-cookie"]
+
+    assert "Secure" not in set_cookie("http://example.com", "ui-http@example.com")
+    assert "Secure" in set_cookie("https://example.com", "ui-tls@example.com")
+
+
+def test_htmx_error_body_is_not_swapped(client):
+    """htmx 也会 swap 4xx/5xx，出错响应得声明“这不是可替换的内容”，否则 JSON 会顶掉卡片。"""
+    path = "/ui/accounts/abc/records"          # account_id 不是整数 → 400
+    assert client.get(path, headers={"hx-request": "true"}).headers["hx-reswap"] == "none"
+    assert "hx-reswap" not in client.get(path).headers
 
 
 def test_fragments_require_session(client):
@@ -202,7 +216,7 @@ def test_delete_removes_account(client):
 
 
 def test_manage_button_toggles_between_expand_and_collapse(client):
-    """展开与收起必须是两个不同的 URL（曾经收起时请求的还是展开的 URL，于是收不起来）。"""
+    """展开与收起必须是两个不同的 URL，否则收不起来。"""
     ui_login(client, "ui-toggle@example.com")
     user = db.find_user_by_email("ui-toggle@example.com")
     account = make_account(user["id"], "977100001")
@@ -219,7 +233,7 @@ def test_manage_button_toggles_between_expand_and_collapse(client):
 
 
 def test_address_has_its_own_column(client):
-    """楼栋名单独一列：坐标列里只剩坐标（之前两者挤在同一格）。"""
+    """楼栋名单独一列：坐标列里只剩坐标。"""
     ui_login(client, "ui-cols@example.com")
     user = db.find_user_by_email("ui-cols@example.com")
     account = make_account(user["id"], "977500001")
@@ -271,9 +285,10 @@ def test_edit_and_records_jump_to_their_cards(client):
 
     account = db.list_accounts(user["id"])[0]
     html = client.get(f"/ui/accounts?open={account['id']}").text   # 管理面板展开后才会有这两个按钮
-    # 编辑：直接回页顶（表单卡片上面还有页头，只滚到卡片会把页头推出去）
-    assert "hx-swap=\"outerHTML show:window:top\"" in html
-    assert "hx-swap=\"outerHTML show:#records-card:top\"" in html
+    # 页顶用 body 而不是 window：窗口对象没有 scrollIntoView，showTarget:window 会静默不滚。
+    assert 'hx-swap="outerHTML show:top showTarget:body"' in html
+    assert 'hx-swap="outerHTML show:top showTarget:#records-card"' in html
+    assert "show:window:top" not in html and "show:#records-card:top" not in html
 
 
 def test_record_row_carries_both_timestamp_forms(client):

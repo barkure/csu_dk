@@ -309,10 +309,7 @@ def test_add_account_outside_window_leaves_address_empty(owner, monkeypatch):
     assert response.json()["account"]["dkdz"] == ""
     assert db.get_account_by_username(user["id"], "977200001")["dkdz"] == ""
 def test_add_account_happy_path_stores_everything(owner, monkeypatch):
-    """添加成功的完整路径：默认开启、窗口与地址来自探测、登录态一并落库。
-
-    （这之前没有用例覆盖 → 漏掉了 enabled 在"新建"分支上的 TypeError。）
-    """
+    """添加成功的完整路径：默认开启、窗口与地址来自探测、登录态一并落库。"""
     client, user, _ = owner
     monkeypatch.setattr("app.accounts.probe_window", lambda *_args, **_kw: {
         "location": {"canDk": True, "yxMc": "升华8栋"},

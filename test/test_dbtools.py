@@ -118,8 +118,7 @@ def test_import_is_one_transaction(tmp_path):
 def test_db_check_command_reports_incompatible_database(tmp_path):
     """真实启动链：结构不符时退出码 1、给出提示、没有 traceback。
 
-    这条必须用子进程跑 —— 结构核对是在导入 app.db 时执行的，
-    以前 CLI 还没轮到友好输出就先抛异常了。
+    必须用子进程跑：结构核对发生在导入 app.db 时。
     """
     import subprocess
     import sys

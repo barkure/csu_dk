@@ -148,5 +148,5 @@ test/                单元测试与接口测试
 ## 致谢
 
 - CAS 登录流程与密码加密实现参考 [@Dislink](https://github.com/Dislink) 提供的技术资料
-- 管理界面使用 [htmx 2.0.4](https://htmx.org/)（MIT License）
+- 管理界面使用 [htmx 4.0.0](https://htmx.org/)（MIT License）
 - 其他依赖见 `pyproject.toml`

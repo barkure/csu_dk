@@ -26,5 +26,5 @@ function startAllCountdowns(root) {
   (root || document).querySelectorAll('[data-cooldown]').forEach(startCountdown);
 }
 
-document.addEventListener('htmx:afterSwap', (event) => startAllCountdowns(event.target));
+document.addEventListener('htmx:after:swap', (event) => startAllCountdowns(event.target));
 document.addEventListener('DOMContentLoaded', () => startAllCountdowns(document));

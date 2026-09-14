@@ -4,13 +4,10 @@
 <header>
   <h1>妙妙道具</h1>
   <div class="status">
-    <span id="secure-badge" class="badge hidden">定位不可用</span>
     <span id="who-email">{{ email }}</span>
     <button type="button" class="plain" hx-post="/ui/logout" hx-swap="none">登出</button>
   </div>
 </header>
-
-<script>if (!window.isSecureContext) document.getElementById('secure-badge').classList.remove('hidden');</script>
 
 {% include "partials/form.html" %}
 {% include "partials/accounts.html" %}
