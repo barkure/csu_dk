@@ -28,8 +28,7 @@ def make_account(user_id: int, username: str, *, password_enc: str, schedule: st
     now = to_local_iso(local_now(cfg.config.tz))
     account = db.insert_account({
         "user_id": user_id, "csu_username": username, "password_enc": password_enc,
-        "enabled": 1,
-        "jd": 112.936833, "wd": 28.157238, "dkdz": "升华8栋",
+        "enabled": 1, "dkdz": "升华8栋",
         "token": encrypt_secret("jwt"), "token_at": now,
         "created_at": now, "updated_at": now,
     })

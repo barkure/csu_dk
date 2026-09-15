@@ -1,7 +1,4 @@
-"""CAS 统一身份认证登录。密码加密与前端一致：AES-CBC(随机64位前缀 + 密码 + PKCS7)。
-
-关键：POST 必须发到**带 service 参数**的地址，否则 CAS 不下发 ticket。
-"""
+"""CAS 登录与密码加密。"""
 from __future__ import annotations
 
 import base64
@@ -30,13 +27,10 @@ UA = (
 _AES_CHARS = "ABCDEFGHJKMNPQRSTWXYZabcdefhijkmnprstwxyz2345678"
 _AES_LENGTHS = {16: AES, 24: AES, 32: AES}
 
-# 限制验证码重试，避免触发 IP 风控
 MAX_CAPTCHA_ATTEMPTS = 2
 
-# 支持的验证码图片类型
 _IMAGE_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"BM", b"RIFF", b"II*\x00", b"MM\x00*")
 
-# 验证码接口；时间戳用于防缓存
 CAPTCHA_URL = f"{CAS_BASE}/getCaptcha.htl"
 
 
@@ -45,7 +39,7 @@ class CasIpFrozenError(Exception):
 
 
 class _CaptchaRejected(Exception):
-    """CAS 明确说验证码不对 —— 换一张图重试，而不是当成凭据错误。"""
+    """验证码被拒。"""
 
 
 def _random_from(chars: str, length: int) -> str:
@@ -62,14 +56,14 @@ def encrypt_password(password: str, salt: str) -> str:
 
 
 def input_value(html: str, field_id: str) -> str | None:
-    """取某个 <input id="..."> 的 value（不依赖属性顺序与属性存在性）。"""
+    """读取表单值。"""
     tag = BeautifulSoup(html, "html.parser").find("input", id=field_id)
     value = tag.get("value") if tag else None
     return str(value) if value is not None else None
 
 
 def error_tip(html: str) -> str | None:
-    """CAS 的错误提示区（#showErrorTip）—— 登录页正文里也有"验证码"等字样，只能认这个区域。"""
+    """读取 CAS 错误提示。"""
     node = BeautifulSoup(html, "html.parser").select_one("#showErrorTip")
     if not node:
         return None
@@ -107,11 +101,7 @@ def _is_cas_host(url: str) -> bool:
 
 def cas_login(session: requests.Session, username: str, password: str | None,
               service: str, timeout: int = 20) -> str:
-    """完成 CAS 登录并跟随跳转，返回落地页 HTML（业务侧要从里面取 uid/lzc）。
-
-    password 传 None 表示本地密码解不开：会话还有效就照样登录（CASTGC 能免密码换 ticket），
-    真需要交密码时才报错，而不是一上来就把账号判死。
-    """
+    """登录 CAS 并返回落地页。"""
     login_url = f"{CAS_BASE}/login?service={requests.utils.quote(service, safe='')}"
 
     first = session.get(login_url, headers={"user-agent": UA}, timeout=timeout)
@@ -119,7 +109,6 @@ def cas_login(session: requests.Session, username: str, password: str | None,
     if frozen:
         raise frozen
 
-    # 有效 CAS 会话可直接换取 ticket
     if not _is_cas_host(first.url):
         return first.text
 
@@ -127,7 +116,6 @@ def cas_login(session: requests.Session, username: str, password: str | None,
         raise RuntimeError("未找到 CAS 登录表单（页面结构可能变了）")
 
     if password is None:
-        # 凭据错误会触发重新提交密码状态
         raise SecretDecryptError("CAS 会话已失效，而本地保存的密码又无法解密，请在「编辑账号」里重新提交一次密码")
 
     if _needs_captcha(session, username, timeout):
@@ -137,7 +125,7 @@ def cas_login(session: requests.Session, username: str, password: str | None,
 
 
 def _needs_captcha(session: requests.Session, username: str, timeout: int) -> bool:
-    """CAS 会在连续失败几次后要求验证码；查不到就当不需要（照旧走密码登录）。"""
+    """检查是否需要验证码。"""
     try:
         need = session.get(
             f"{CAS_BASE}/checkNeedCaptcha.htl",
@@ -156,12 +144,7 @@ def _looks_like_image(data: bytes) -> bool:
 
 def _captcha_image(session: requests.Session, page_html: str, login_url: str,
                    timeout: int) -> tuple[bytes | None, str, str]:
-    """取验证码图片，返回 (图片, 来源, 地址)。
-
-    图片地址优先从登录页里认（学校自己在页面上写的地址最权威），
-    页面上没有就用学校固定的取图接口 getCaptcha.htl。
-    拿到的不是图片就当没拿到 —— 绝不把错误页当验证码提交。
-    """
+    """读取验证码图片。"""
     src = None
     for tag in BeautifulSoup(page_html, "html.parser").find_all("img"):
         candidate = str(tag.get("src") or "")
@@ -185,11 +168,7 @@ def _captcha_image(session: requests.Session, page_html: str, login_url: str,
 
 
 def _keep_evidence(page_html: str, image: bytes | None) -> None:
-    """把现场证据落到 data/captcha-debug/ 下。
-
-    这条链路没法在测试里对着真学校验（会喂风控），真碰上了就得能回头查：
-    页面里到底有没有验证码图片、取到的是不是图片、识别成了什么。
-    """
+    """保存验证码诊断材料。"""
     try:
         directory = cfg.DATA_DIR / "captcha-debug"
         directory.mkdir(parents=True, exist_ok=True)
@@ -208,7 +187,6 @@ def _keep_evidence(page_html: str, image: bytes | None) -> None:
 def _login_with_captcha(session: requests.Session, login_url: str, username: str,
                         password: str, timeout: int) -> str:
     for attempt in range(1, MAX_CAPTCHA_ATTEMPTS + 1):
-        # 每轮刷新验证码和 execution
         page = session.get(login_url, headers={"user-agent": UA}, timeout=timeout)
         frozen = detect_ip_frozen(page.text)
         if frozen:

@@ -30,7 +30,7 @@ uv run python -m app
 │   ├── templates/             页面模板
 │   └── static/                前端样式与脚本
 ├── test/                      测试
-└── tools/                     维护工具
+└── tools/                     工具
 ```
 
 ## 测试
@@ -42,10 +42,10 @@ uv run ruff check .
 
 ## 致谢
 
-- CAS 登录流程与密码加密实现参考 [@Dislink](https://github.com/Dislink) 提供的技术资料
+- CAS 登录流程参考自 [@Dislink](https://github.com/Dislink)
 - 管理界面使用 [htmx 4.0.0](https://htmx.org/)（MIT License）
 - 其他依赖见 `pyproject.toml`
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE) 开源。
+[MIT License](LICENSE)

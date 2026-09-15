@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import random
 import socket
 from datetime import datetime, timedelta
 
@@ -10,7 +11,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from . import config as cfg
 from . import db
 from .auth import limiters_sweep
-from .checkin import has_fresh_login, login_paused_until, run_checkin, scrub_detail, sweep_login_state
+from .checkin import (
+    has_fresh_login,
+    login_paused_until,
+    refresh_login,
+    run_checkin,
+    scrub_detail,
+    sweep_login_state,
+)
 from .clock import local_now, parse_local, to_local_iso
 from .domain import CheckinStatus, Trigger
 from .log import log_event
@@ -29,19 +37,12 @@ def lease_stale_seconds() -> int:
 
 
 def _done_in_window(account: dict, start: datetime, end: datetime) -> bool:
-    if account.get("last_status") not in (CheckinStatus.SUCCESS, CheckinStatus.SKIPPED):
+    if account.get("last_status") not in (
+        CheckinStatus.SUCCESS, CheckinStatus.SKIPPED, CheckinStatus.NO_TASK,
+    ):
         return False
     last_run = account.get("last_run_at")
     return bool(last_run) and start <= parse_local(last_run) <= end
-
-
-def _attempts_today(account: dict) -> int:
-    """统计当前时间窗内的自动尝试次数。"""
-    start, end = _window_bounds(local_now(cfg.config.tz))
-    return len([
-        record for record in db.list_records(account["id"], 10)
-        if record["trigger"] == Trigger.SCHEDULE and start <= parse_local(record["run_at"]) <= end
-    ])
 
 
 def _window_bounds(now: datetime) -> tuple[datetime, datetime]:
@@ -83,16 +84,39 @@ def run_batch(trigger: Trigger | str = Trigger.SCHEDULE, force: bool = False,
     now = local_now(cfg.config.tz)
     results = []
     source = db.all_enabled_accounts() if accounts is None else accounts
-    for account in sorted(source, key=lambda item: item["id"]):
-        if not _ready(account, now, force):
-            continue
+    ready = [account for account in source if _ready(account, now, force)]
+    take = len(ready) if force else min(cfg.config.checkin_per_tick, len(ready))
+    picked = random.sample(ready, take) if take else []
+    for account in picked:
         result = run_checkin(account, trigger)
+        if result.get("deferred"):
+            continue
         results.append((account, result))
         if result.get("paused_until"):
             continue
         log_event("checkin.batch", account_id=account["id"], status=result["status"],
                   message=scrub_detail(result["message"]))
     return results
+
+
+def _refresh_eligible(account: dict) -> bool:
+    return bool(account.get("enabled") and not account.get("auth_error")
+                and not login_paused_until())
+
+
+def refresh_logins(accounts: list[dict] | None = None) -> list[tuple[dict, dict]]:
+    source = db.all_enabled_accounts() if accounts is None else accounts
+    ready = [account for account in source
+             if _refresh_eligible(account) and not has_fresh_login(account)]
+    if not ready:
+        return []
+    account = random.choice(ready)
+    result = refresh_login(account)
+    if result.get("deferred"):
+        return []
+    log_event("login.refresh", account_id=account["id"], ok=result.get("ok"),
+              message=scrub_detail(result.get("message") or ""))
+    return [(account, result)]
 
 
 def maintenance() -> None:
@@ -129,7 +153,16 @@ def tick() -> None:
     now = local_now(cfg.config.tz)
     if _lease_owner and not _holds_lease(now):
         return
-    run_batch()
+    if _inside_window(now):
+        run_batch()
+
+
+def refresh_tick() -> None:
+    now = local_now(cfg.config.tz)
+    if _lease_owner and not _holds_lease(now):
+        return
+    if not _inside_window(now):
+        refresh_logins()
 
 
 def start_scheduler() -> BackgroundScheduler | None:
@@ -143,6 +176,8 @@ def start_scheduler() -> BackgroundScheduler | None:
     _scheduler = BackgroundScheduler(daemon=True)
     _scheduler.add_job(tick, "interval", seconds=cfg.config.scheduler_interval,
                        id="tick", max_instances=1, coalesce=True)
+    _scheduler.add_job(refresh_tick, "interval", seconds=cfg.config.refresh_interval,
+                       id="refresh", max_instances=1, coalesce=True)
     _scheduler.add_job(maintenance, "interval", seconds=cfg.config.maintenance_interval,
                        id="maintenance", max_instances=1, coalesce=True)
     _scheduler.start()

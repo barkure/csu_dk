@@ -14,11 +14,11 @@ from .checkin import relogin, run_checkin
 from .clock import local_now, to_local_iso
 from .domain import CheckinStatus, Trigger
 from .errors import AppError, RateLimitError
-from .views import STATUS_CLASS, account_view, fmt, fmt_full, status_label
+from .views import BADGE_CLASS, account_view, fmt, fmt_full, status_label
 
 templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
 templates.env.globals.update(
-    status_class=lambda status: STATUS_CLASS.get(status or "", ""),
+    status_class=lambda status: BADGE_CLASS.get(status or "", ""),
     status_label=status_label,
     fmt=fmt,
     fmt_full=fmt_full,
@@ -193,7 +193,8 @@ def ui_run(request: Request, account_id: int):
     messages = {
         account_id: {
             "text": result["message"],
-            "kind": "ok" if result["status"] in (CheckinStatus.SUCCESS, CheckinStatus.SKIPPED) else "err",
+            "kind": ("ok" if result["status"] in (CheckinStatus.SUCCESS, CheckinStatus.SKIPPED)
+                     else "err" if result["status"] == CheckinStatus.FAILED else ""),
         },
     }
     return _render(request, "partials/accounts.html", _context(user, open_id=account_id, messages=messages))
@@ -223,7 +224,7 @@ def ui_delete(request: Request, account_id: int):
     user = _user(request)
     if not user:
         return _to_login(request)
-    db.delete_account(user["id"], account_id)
+    accounts_service.delete(user, account_id)
     return _render(request, "partials/accounts.html", _context(user))
 
 

@@ -84,7 +84,7 @@ def main() -> int:
         return 1 if failures else 0
 
     status, body = call("/api/accounts", "POST", {
-        "csuUsername": CSU_USER, "password": CSU_PASS, "jd": 112.936833, "wd": 28.157238, "runNow": True,
+        "csuUsername": CSU_USER, "password": CSU_PASS, "runNow": True,
     })
     ok("添加账号（提交即验证）", status == 200, str(body)[:120])
     if status != 200:

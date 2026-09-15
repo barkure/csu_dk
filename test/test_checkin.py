@@ -17,9 +17,7 @@ def make_account(user_id: int, **overrides) -> dict:
     now = local_now(cfg.config.tz)
     row = {
         "user_id": user_id, "csu_username": f"9{next(_counter):08d}",
-        "password_enc": encrypt_secret("whatever"), "enabled": 1,
-
-        "jd": 112.936833, "wd": 28.157238, "dkdz": "",
+        "password_enc": encrypt_secret("whatever"), "enabled": 1, "dkdz": "",
         "created_at": to_local_iso(now), "updated_at": to_local_iso(now),
     }
     row.update(overrides)
@@ -48,38 +46,36 @@ def test_has_fresh_login_rules(user):
     assert checkin.has_fresh_login({"token": None, "token_at": None}) is False
 
 
-def test_attempts_today_counts_only_scheduled(user, monkeypatch):
-    from app.scheduler import _attempts_today
-
-    now = datetime(2026, 9, 12, 21, 0)  # noqa: DTZ001
-    monkeypatch.setattr("app.scheduler.local_now", lambda _tz: now)
-    account = make_account(user["id"])
-    db.add_record(account["id"], to_local_iso(now), "manual", "waiting", "手动")
-    assert _attempts_today(account) == 0
-
-    db.add_record(account["id"], to_local_iso(now), "schedule", "waiting", "自动")
-    assert _attempts_today(account) == 1
-
-    db.add_record(account["id"], to_local_iso(now - timedelta(days=1)), "schedule", "failed", "昨天")
-    assert _attempts_today(account) == 1
-
-
-def test_batch_runs_all_ready_accounts_in_id_order(user, monkeypatch):
+def test_batch_randomly_picks_two_ready_accounts(user, monkeypatch):
     from app import scheduler
 
-    first = make_account(user["id"])
-    second = make_account(user["id"])
+    accounts = [make_account(user["id"]) for _ in range(5)]
     now = datetime(2026, 9, 12, 21, 0)  # noqa: DTZ001
     monkeypatch.setattr(scheduler, "local_now", lambda _tz: now)
     calls = []
     monkeypatch.setattr(scheduler, "run_checkin", lambda account, trigger: (
-        calls.append((account["id"], trigger)) or {"status": "success", "message": "ok"}
+        calls.append(account["id"]) or {"status": "success", "message": "ok"}
     ))
+    monkeypatch.setattr(scheduler.random, "sample", lambda population, k: list(population)[:k])
 
-    results = scheduler.run_batch(accounts=[second, first])
+    results = scheduler.run_batch(accounts=accounts)
 
-    assert [account["id"] for account, _result in results] == [first["id"], second["id"]]
-    assert [account_id for account_id, _trigger in calls] == [first["id"], second["id"]]
+    assert calls == [accounts[0]["id"], accounts[1]["id"]]
+    assert [account["id"] for account, _result in results] == calls
+
+
+def test_batch_force_runs_all_ready_accounts(user, monkeypatch):
+    from app import scheduler
+
+    accounts = [make_account(user["id"]) for _ in range(4)]
+    now = datetime(2026, 9, 12, 21, 0)  # noqa: DTZ001
+    monkeypatch.setattr(scheduler, "local_now", lambda _tz: now)
+    monkeypatch.setattr(scheduler, "run_checkin",
+                        lambda account, trigger: {"status": "success", "message": "ok"})
+    monkeypatch.setattr(scheduler.random, "sample", lambda population, k: list(population)[:k])
+
+    results = scheduler.run_batch(force=True, accounts=accounts)
+    assert len(results) == 4
 
 
 def test_pause_skips_accounts_that_need_login_without_spending_retry(user, monkeypatch):
@@ -112,6 +108,122 @@ def test_inside_window():
     assert _inside_window(datetime(2026, 9, 12, 21, 0)) is True       # noqa: DTZ001
     assert _inside_window(datetime(2026, 9, 12, 19, 59)) is False     # noqa: DTZ001
     assert _inside_window(datetime(2026, 9, 12, 23, 31)) is False     # noqa: DTZ001
+
+
+def test_checkin_and_refresh_ticks_use_separate_windows(monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(scheduler, "_lease_owner", None)
+    called = []
+    monkeypatch.setattr(scheduler, "refresh_logins", lambda: called.append("refresh"))
+    monkeypatch.setattr(scheduler, "run_batch", lambda: called.append("batch"))
+
+    monkeypatch.setattr(scheduler, "local_now", lambda _tz: datetime(2026, 9, 12, 10, 0))  # noqa: DTZ001
+    scheduler.tick()
+    scheduler.refresh_tick()
+    monkeypatch.setattr(scheduler, "local_now", lambda _tz: datetime(2026, 9, 12, 21, 0))  # noqa: DTZ001
+    scheduler.tick()
+    scheduler.refresh_tick()
+    assert called == ["refresh", "batch"]
+
+
+def test_scheduler_registers_separate_intervals(monkeypatch):
+    from app import scheduler
+
+    jobs = []
+
+    class FakeScheduler:
+        def add_job(self, fn, _kind, **kwargs):
+            jobs.append((fn.__name__, kwargs["seconds"]))
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(scheduler, "BackgroundScheduler", lambda **_kwargs: FakeScheduler())
+    monkeypatch.setattr(scheduler, "_holds_lease", lambda *_args, **_kwargs: True)
+    scheduler.start_scheduler()
+    assert ("tick", cfg.config.scheduler_interval) in jobs
+    assert ("refresh_tick", cfg.config.refresh_interval) in jobs
+    scheduler._scheduler = None
+    scheduler._lease_owner = None
+
+
+def test_refresh_picks_one_stale_account(user, monkeypatch):
+    from app import scheduler
+
+    now = datetime(2026, 9, 12, 10, 0)  # noqa: DTZ001
+    today = to_local_iso(now)
+    yesterday = to_local_iso(now - timedelta(days=1))
+    fresh = make_account(user["id"], token="t", cookies="[]", token_at=today)
+    broken = make_account(user["id"], token="t", cookies="[]", token_at=yesterday,
+                          auth_error="bad_credentials")
+    stale = make_account(user["id"], token="t", cookies="[]", token_at=yesterday)
+    monkeypatch.setattr(scheduler, "local_now", lambda _tz: now)
+    monkeypatch.setattr(checkin, "local_now", lambda _tz: now)
+    calls = []
+    monkeypatch.setattr(scheduler, "refresh_login", lambda account: (
+        calls.append(account["id"]) or {"ok": True, "message": "已刷新登录态"}
+    ))
+    monkeypatch.setattr(scheduler.random, "sample", lambda population, k: list(population)[:k])
+
+    results = scheduler.refresh_logins(accounts=[fresh, broken, stale])
+    assert calls == [stale["id"]]
+    assert [account["id"] for account, _result in results] == [stale["id"]]
+
+
+def test_refresh_stops_when_all_have_today_token(user, monkeypatch):
+    from app import scheduler
+
+    now = datetime(2026, 9, 12, 10, 0)  # noqa: DTZ001
+    today = to_local_iso(now)
+    first = make_account(user["id"], token="t", cookies="[]", token_at=today)
+    second = make_account(user["id"], token="t", cookies="[]", token_at=today)
+    monkeypatch.setattr(scheduler, "local_now", lambda _tz: now)
+    monkeypatch.setattr(checkin, "local_now", lambda _tz: now)
+    calls = []
+    monkeypatch.setattr(scheduler, "refresh_login", lambda account: (
+        calls.append(account["id"]) or {"ok": True, "message": "登录态有效"}
+    ))
+    results = scheduler.refresh_logins(accounts=[first, second])
+    assert calls == []
+    assert results == []
+
+
+def test_refresh_login_updates_token_without_checkin_record(user, monkeypatch):
+    account = make_account(user["id"], token="old", cookies="[]",
+                           token_at=to_local_iso(local_now(cfg.config.tz) - timedelta(days=1)))
+
+    class Client:
+        token = "new"
+        casual = "cas"
+        def cookies_json(self):
+            return "[]"
+
+    monkeypatch.setattr("app.checkin.build_client", lambda _account: Client())
+    monkeypatch.setattr("app.checkin.cas_login", lambda *_args, **_kw: None)
+
+    result = checkin.refresh_login(db.get_account_by_id(account["id"]))
+    saved = db.get_account_by_id(account["id"])
+    assert result["ok"] is True
+    assert saved["token"] == "new"
+    assert checkin.has_fresh_login(saved) is True
+    assert db.list_records(account["id"]) == []
+
+
+def test_refresh_login_defers_rate_limit(user, monkeypatch):
+    from app.errors import RateLimitError
+
+    account = make_account(user["id"])
+    monkeypatch.setattr("app.checkin.build_client", lambda _account: EngineClient({}))
+
+    def boom(*_args, **_kw):
+        raise RateLimitError("登录请求太密集，请 12 秒后再试", 12)
+
+    monkeypatch.setattr("app.checkin.cas_login", boom)
+    result = checkin.refresh_login(account)
+    assert result["deferred"] is True
+    assert db.get_account_by_id(account["id"])["auth_error"] == ""
+    assert db.list_records(account["id"]) == []
 
 
 class EngineClient:
@@ -150,6 +262,29 @@ def engine_status(account):
     return checkin.run_checkin(account, "schedule")
 
 
+def test_engine_relogs_when_session_rejected(user, monkeypatch):
+    client = EngineClient({"sfydk": 1, "dksj": "2026-09-12 20:18:43"})
+    account = engine_account(user, monkeypatch, client)
+    calls = {"status": 0, "login": 0}
+    original_status = client.dk_status
+
+    def dk_status(dklb="PA"):
+        calls["status"] += 1
+        if calls["status"] == 1:
+            return {"code": "401", "message": "未登录"}
+        return original_status()
+
+    def fake_login(_account, **_kw):
+        calls["login"] += 1
+        return client
+
+    client.dk_status = dk_status
+    monkeypatch.setattr("app.checkin._login", fake_login)
+    result = engine_status(account)
+    assert result["status"] == "skipped"
+    assert calls == {"status": 2, "login": 1}
+
+
 def test_engine_skipped_when_already_checked_in(user, monkeypatch):
     account = engine_account(user, monkeypatch, EngineClient({"sfydk": 1, "dksj": "2026-09-12 20:18:43"}))
     result = engine_status(account)
@@ -176,7 +311,7 @@ def test_engine_failed_when_location_rejected(user, monkeypatch):
         {"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
         location={"canDk": False, "msg": "不在考勤范围", "yxMc": "升华5栋", "pcMi": 700},
     )
-    account = engine_account(user, monkeypatch, client)
+    account = engine_account(user, monkeypatch, client, dkdz="升华5栋")
     monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="": (
         (112.936833, 28.157238), "升华5栋", {"canDk": False, "pcMi": 700, "yxMc": "升华5栋"},
         "located",
@@ -192,7 +327,7 @@ def test_engine_determines_location_when_unknown(user, monkeypatch):
         {"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
         after={"sfydk": 1, "dksj": "2026-09-12 20:18:43"},
     )
-    account = engine_account(user, monkeypatch, client, jd=None, wd=None)
+    account = engine_account(user, monkeypatch, client)
     monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="": (
         (112.936237, 28.158935), "升华24栋", {"canDk": True, "pcMi": 2, "yxMc": "升华24栋"},
         "located",
@@ -200,7 +335,8 @@ def test_engine_determines_location_when_unknown(user, monkeypatch):
     result = engine_status(account)
     assert result["status"] == "success"
     saved = db.get_account_by_id(account["id"])
-    assert (saved["jd"], saved["wd"], saved["dkdz"]) == (112.936237, 28.158935, "升华24栋")
+    assert saved["dkdz"] == "升华24栋"
+    assert saved["jd"] is None and saved["wd"] is None
     assert client.submitted["jd"] == 112.936237
 
 
@@ -210,7 +346,7 @@ def test_engine_relocates_when_position_rejected(user, monkeypatch):
         location={"canDk": False, "msg": "不在考勤范围", "yxMc": "升华5栋", "pcMi": 700},
         after={"sfydk": 1, "dksj": "2026-09-12 20:18:43"},
     )
-    account = engine_account(user, monkeypatch, client)
+    account = engine_account(user, monkeypatch, client, dkdz="升华5栋")
     monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="": (
         (112.935978, 28.158930), "升华24栋", {"canDk": True, "pcMi": 3, "yxMc": "升华24栋"},
         "located",
@@ -218,8 +354,60 @@ def test_engine_relocates_when_position_rejected(user, monkeypatch):
     result = engine_status(account)
     assert result["status"] == "success"
     saved = db.get_account_by_id(account["id"])
-    assert (saved["jd"], saved["wd"], saved["dkdz"]) == (112.935978, 28.158930, "升华24栋")
+    assert saved["dkdz"] == "升华24栋"
+    assert saved["jd"] is None
     assert client.submitted["jd"] == 112.935978, "提交要用重测后的坐标"
+
+
+def test_engine_stores_private_coords_for_rental(user, monkeypatch):
+    from app import buildings
+
+    client = EngineClient(
+        {"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+        after={"sfydk": 1, "dksj": "2026-09-12 20:18:43"},
+    )
+    account = engine_account(user, monkeypatch, client)
+    monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="": (
+        (112.927056, 28.175114), "你申报的租房地址",
+        {"canDk": True, "pcMi": 2, "yxMc": "你申报的租房地址"}, "located",
+    ))
+    result = engine_status(account)
+    assert result["status"] == "success"
+    saved = db.get_account_by_id(account["id"])
+    assert saved["dkdz"] == "你申报的租房地址"
+    assert (saved["jd"], saved["wd"]) == (112.927056, 28.175114)
+    assert buildings.resolve("你申报的租房地址") is None
+
+
+def test_engine_reuses_account_coords_for_rental(user, monkeypatch):
+    client = EngineClient(
+        {"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+        location={"canDk": True, "yxMc": "你申报的租房地址"},
+        after={"sfydk": 1, "dksj": "2026-09-12 20:18:43"},
+    )
+    account = engine_account(user, monkeypatch, client, dkdz="你申报的租房地址",
+                             jd=112.927056, wd=28.175114)
+    monkeypatch.setattr("app.checkin.buildings.for_student",
+                        lambda *_a, **_k: pytest.fail("租房已有坐标不该重测"))
+    result = engine_status(account)
+    assert result["status"] == "success"
+    assert client.submitted["jd"] == 112.927056
+
+
+def test_engine_uses_cached_building_coords(user, monkeypatch):
+    from app import buildings
+
+    client = EngineClient(
+        {"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+        location={"canDk": True, "yxMc": "升华8栋"},
+        after={"sfydk": 1, "dksj": "2026-09-12 21:02:00"},
+    )
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
+    monkeypatch.setattr("app.checkin.buildings.for_student",
+                        lambda *_a, **_k: pytest.fail("有楼栋缓存不该重测"))
+    result = engine_status(account)
+    assert result["status"] == "success"
+    assert client.submitted["jd"] == buildings.resolve("升华8栋")[0]
 
 
 def test_engine_success_stores_address(user, monkeypatch):
@@ -228,12 +416,12 @@ def test_engine_success_stores_address(user, monkeypatch):
         location={"canDk": True, "yxMc": "升华8栋"},
         after={"sfydk": 1, "dksj": "2026-09-12 21:02:00"},
     )
-    account = engine_account(user, monkeypatch, client)
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
     result = engine_status(account)
 
     assert result["status"] == "success"
     assert result["dksj"] == "2026-09-12 21:02:00"
-    assert client.submitted["dkdz"] == "升华8栋"       # 提交的地址来自学校按坐标返回的楼栋名
+    assert client.submitted["dkdz"] == "升华8栋"
     assert client.submitted["dkbc"] == "校内住宿打卡"
     assert db.get_account_by_id(account["id"])["dkdz"] == "升华8栋"
 
@@ -244,10 +432,41 @@ def test_engine_failed_when_submit_rejected(user, monkeypatch):
         location={"canDk": True, "yxMc": "升华8栋"},
         submit={"code": "500", "message": "服务异常"},
     )
-    account = engine_account(user, monkeypatch, client)
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
     result = engine_status(account)
     assert result["status"] == "failed"
     assert "提交失败" in result["message"]
+
+
+def test_engine_schedule_defers_login_rate_limit(user, monkeypatch):
+    from app.errors import RateLimitError
+
+    account = make_account(user["id"])
+    monkeypatch.setattr("app.checkin.build_client", lambda _account: EngineClient({}))
+
+    def boom(*_args, **_kw):
+        raise RateLimitError("登录请求太密集，请 12 秒后再试", 12)
+
+    monkeypatch.setattr("app.checkin.cas_login", boom)
+    result = checkin.run_checkin(account, "schedule")
+
+    assert result["deferred"] is True
+    assert db.list_records(account["id"]) == []
+    assert db.get_account_by_id(account["id"])["last_status"] is None
+
+
+def test_batch_skips_deferred_rate_limit(user, monkeypatch):
+    from app import scheduler
+
+    account = make_account(user["id"])
+    now = datetime(2026, 9, 12, 21, 0)  # noqa: DTZ001
+    monkeypatch.setattr(scheduler, "local_now", lambda _tz: now)
+    monkeypatch.setattr(scheduler, "run_checkin", lambda *_args: {
+        "status": "waiting", "message": "登录请求太密集", "deferred": True,
+    })
+
+    assert scheduler.run_batch(accounts=[account]) == []
+    assert db.list_records(account["id"]) == []
 
 
 def test_engine_marks_auth_error_on_bad_credentials(user, monkeypatch):
@@ -321,3 +540,32 @@ def test_login_survives_undecryptable_password_when_session_is_alive(monkeypatch
 
     assert checkin._login({"id": 1, "csu_username": "255000001", "password_enc": "x"}) == "client"
     assert seen["password"] is None, "应当把 None 交给 CAS，让它在真需要密码时才报错"
+
+
+def test_engine_disables_account_when_school_has_no_task(user, monkeypatch):
+    client = EngineClient({})
+    account = engine_account(user, monkeypatch, client)
+    client.dk_status = lambda dklb="PA": {"code": "331", "message": "当前没有打卡事项", "data": None}
+    logins = []
+    monkeypatch.setattr("app.checkin.cas_login", lambda *_a, **_k: logins.append("login"))
+
+    result = engine_status(account)
+
+    assert result == {"status": "no_task", "message": "无打卡事项", "dksj": None}
+    assert logins == []
+    assert [record["status"] for record in db.list_records(account["id"])] == ["no_task"]
+    saved = db.get_account_by_id(account["id"])
+    assert saved["enabled"] == 0
+    assert saved["auth_error"] == ""
+
+
+def test_engine_still_fails_on_unknown_business_code(user, monkeypatch):
+    client = EngineClient({})
+    account = engine_account(user, monkeypatch, client)
+    client.dk_status = lambda dklb="PA": {"code": "500", "message": "服务异常", "data": None}
+    monkeypatch.setattr("app.checkin.cas_login", lambda *_a, **_k: None)
+
+    result = engine_status(account)
+
+    assert result["status"] == "failed"
+    assert "业务接口返回异常" in result["message"]

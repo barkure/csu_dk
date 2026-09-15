@@ -14,12 +14,12 @@ TAG_BYTES = 16
 
 
 def _master_key() -> bytes:
-    """解密路径：只读，缺失/非法就抛错，绝不生成新密钥。"""
+    """读取解密密钥。"""
     return base64.b64decode(cfg.read_master_key())
 
 
 def _master_key_for_write() -> bytes:
-    """写入路径：全项目唯一允许按需生成密钥的地方（人不主动提交凭据就不会发生）。"""
+    """读取或创建加密密钥。"""
     info = cfg.inspect_master_key()
     if info.exists and info.valid and info.key:
         return base64.b64decode(info.key)

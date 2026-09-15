@@ -1,4 +1,4 @@
-"""网页界面：Jinja2 模板 + htmx 片段。走的是和浏览器一样的表单流程。"""
+"""网页测试。"""
 from __future__ import annotations
 
 import re
@@ -39,8 +39,7 @@ def make_account(user_id: int, username: str, **overrides) -> dict:
     now = to_local_iso(local_now(cfg.config.tz))
     row = {
         "user_id": user_id, "csu_username": username, "password_enc": encrypt_secret("whatever"),
-        "enabled": 1,
-        "jd": 112.936833, "wd": 28.157238, "dkdz": "升华8栋", "created_at": now, "updated_at": now,
+        "enabled": 1, "dkdz": "升华8栋", "created_at": now, "updated_at": now,
     }
     row.update(overrides)
     return db.insert_account(row)
@@ -49,7 +48,7 @@ def make_account(user_id: int, username: str, **overrides) -> dict:
 def test_login_page_has_disabled_code_field(client):
     html = client.get("/").text
     assert "妙妙道具" in html
-    assert "disabled" in html  # 还没获取验证码，输入框不可用
+    assert "disabled" in html
 
 
 def test_code_fragment_rejects_bad_email(client):
@@ -66,7 +65,7 @@ def test_code_fragment_echoes_dev_code(client):
 def test_code_fragment_starts_cooldown_countdown(client):
     html = client.post("/ui/code", data={"email": "ui-cool@example.com"}).text
     assert f'data-cooldown="{cfg.config.code_cooldown_seconds}"' in html
-    assert "login.js" not in html  # 脚本由登录页引入，片段里不该重复
+    assert "login.js" not in html
     again = client.post("/ui/code", data={"email": "ui-cool@example.com"}).text
     assert "请求过于频繁" in again
     cooldown = int(re.search(r'id="send-code"[^>]*data-cooldown="(\d+)"', again).group(1))
@@ -112,7 +111,7 @@ def test_session_cookie_secure_follows_the_request_scheme(client):
 
 
 def test_htmx_error_body_is_not_swapped(client):
-    path = "/ui/accounts/abc/records"          # account_id 不是整数 → 400
+    path = "/ui/accounts/abc/records"
     assert client.get(path, headers={"hx-request": "true"}).headers["hx-reswap"] == "none"
     assert "hx-reswap" not in client.get(path).headers
 
@@ -134,12 +133,32 @@ def test_accounts_fragment_lists_rows_with_manage_panel(client):
 
     html = client.get(f"/ui/accounts?open={account['id']}").text
     assert "977000001" in html
-    assert "升华8栋" in html          # 地址来自学校返回的楼栋名
-    assert "立即打卡" in html          # 展开的管理面板
+    assert "升华8栋" in html
+    assert "立即打卡" in html
     assert "收起" in html
 
     collapsed = client.get("/ui/accounts").text
     assert "立即打卡" not in collapsed
+
+
+@pytest.mark.parametrize(("status", "message", "classes"), [
+    ("skipped", "今日已打卡", ["msg", "ok"]),
+    ("no_task", "无打卡事项", ["msg"]),
+])
+def test_manual_checkin_message_style(client, monkeypatch, status, message, classes):
+    from bs4 import BeautifulSoup
+
+    ui_login(client, f"ui-run-{status}@example.com")
+    user = db.find_user_by_email(f"ui-run-{status}@example.com")
+    account = make_account(user["id"], f"9771{user['id']:05d}")
+    monkeypatch.setattr("app.ui.run_checkin", lambda *_args: {
+        "status": status, "message": message, "dksj": None,
+    })
+
+    html = client.post(f"/ui/accounts/{account['id']}/run").text
+    node = BeautifulSoup(html, "html.parser").select_one(".actions-row .msg")
+    assert node.get_text(strip=True) == message
+    assert node.get("class") == classes
 
 
 def test_account_form_asks_only_for_username_and_password(client):
@@ -196,13 +215,53 @@ def test_records_fragment_shows_history(client):
     assert "hidden" in closed
 
 
-def test_delete_removes_account(client):
+def test_no_task_is_shown_without_error_style(client):
+    ui_login(client, "ui-no-task@example.com")
+    user = db.find_user_by_email("ui-no-task@example.com")
+    account = make_account(user["id"], "977000009", enabled=0)
+    now = to_local_iso(local_now(cfg.config.tz))
+    db.update_account(account["id"], {"last_status": "no_task", "last_run_at": now,
+                                      "last_message": "无打卡事项"})
+    db.add_record(account["id"], now, "schedule", "no_task",
+                  "无打卡事项")
+
+    html = client.get(f"/ui/accounts?open={account['id']}").text
+    records = client.get(f"/ui/accounts/{account['id']}/records").text
+    assert "不用打卡" in html
+    assert "不用打卡" in records
+    assert "无打卡事项" in records
+    assert 'aria-checked="false"' in html
+
+
+def test_delete_removes_account(client, monkeypatch):
+    events = []
+    monkeypatch.setattr("app.accounts.log_event",
+                        lambda event, **fields: events.append((event, fields)))
     ui_login(client, "ui-j@example.com")
     user = db.find_user_by_email("ui-j@example.com")
     account = make_account(user["id"], "977000007")
 
     client.post(f"/ui/accounts/{account['id']}/delete")
+
     assert db.get_account_by_id(account["id"]) is None
+    assert events == [("account.deleted", {"account_id": account["id"], "user_id": user["id"],
+                                          "csu_username_tail": "0007"})]
+
+
+def test_delete_others_account_changes_nothing(client, monkeypatch):
+    from app import accounts as accounts_service
+
+    events = []
+    monkeypatch.setattr("app.accounts.log_event",
+                        lambda event, **fields: events.append((event, fields)))
+    ui_login(client, "ui-k@example.com")
+    owner = db.find_user_by_email("ui-k@example.com")
+    account = make_account(owner["id"], "977000008")
+    stranger = db.upsert_user("ui-stranger@example.com", to_local_iso(local_now(cfg.config.tz)))
+
+    assert accounts_service.delete(stranger, account["id"]) is False
+    assert db.get_account_by_id(account["id"]) is not None
+    assert events == [], "没删掉就不该记事件"
 
 
 def test_manage_button_toggles_between_expand_and_collapse(client):
@@ -217,7 +276,7 @@ def test_manage_button_toggles_between_expand_and_collapse(client):
     assert re.search(r">\s*管理\s*<", collapsed)
 
     expanded = client.get(f"/ui/accounts?open={account['id']}").text
-    assert 'hx-get="/ui/accounts?open="' in expanded   # 收起 → 请求不带 open
+    assert 'hx-get="/ui/accounts?open="' in expanded
     assert re.search(r">\s*收起\s*<", expanded)
 
 
@@ -227,9 +286,9 @@ def test_address_has_its_own_column(client):
     account = make_account(user["id"], "977500001")
 
     account = db.list_accounts(user["id"])[0]
-    html = client.get(f"/ui/accounts?open={account['id']}").text   # 管理面板展开后才会有这两个按钮
+    html = client.get(f"/ui/accounts?open={account['id']}").text
     header = re.search(r"<thead>(.*?)</thead>", html, re.DOTALL).group(1)
-    assert header.count("<th>") == 6                      # 学号/状态/自动打卡/今日结果/楼栋/管理
+    assert header.count("<th>") == 6
     assert "<th>楼栋</th>" in header
     assert "下次执行" not in html, "排期是服务端自己的事，不给用户看"
     assert "坐标" not in html
@@ -238,7 +297,7 @@ def test_address_has_its_own_column(client):
     row = next(r for r in re.findall(r'<tr class="account[^"]*">(.*?)</tr>', html, re.DOTALL)
                if account["csu_username"] in r)
     cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
-    assert cells[4].strip() == "升华8栋"                          # 楼栋列
+    assert cells[4].strip() == "升华8栋"
     empty = make_account(user["id"], "977500002", dkdz="")
     empty_html = client.get(f"/ui/accounts?open={empty['id']}").text
     empty_row = next(row for row in re.findall(r'<tr class="account[^"]*">(.*?)</tr>', empty_html, re.DOTALL)
@@ -267,7 +326,7 @@ def test_edit_and_records_jump_to_their_cards(client):
     make_account(user["id"], "255000123")
 
     account = db.list_accounts(user["id"])[0]
-    html = client.get(f"/ui/accounts?open={account['id']}").text   # 管理面板展开后才会有这两个按钮
+    html = client.get(f"/ui/accounts?open={account['id']}").text
     assert 'hx-swap="outerHTML show:top showTarget:body"' in html
     assert 'hx-swap="outerHTML show:top showTarget:#records-card"' in html
     assert "show:window:top" not in html and "show:#records-card:top" not in html
@@ -280,8 +339,8 @@ def test_record_row_carries_both_timestamp_forms(client):
     db.add_record(account["id"], "2026-09-12T20:18:47", "schedule", "success", "打卡成功", "2026-09-12 20:18:47")
 
     html = client.get(f"/ui/accounts/{account['id']}/records").text
-    assert '<span class="ts-full">2026-09-12 20:18</span>' in html   # 宽屏：带年份
-    assert '<span class="ts-short">09-12 20:18</span>' in html       # 窄屏：省掉年份
+    assert '<span class="ts-full">2026-09-12 20:18</span>' in html
+    assert '<span class="ts-short">09-12 20:18</span>' in html
 
 
 def test_coords_hint_icon_and_link(client):

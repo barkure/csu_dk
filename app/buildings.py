@@ -93,7 +93,7 @@ def resolve(school_name: str) -> tuple[float, float] | None:
     name = (school_name or "").strip()
     if not name:
         return None
-    return _coord(_seed()["points"].get(name)) or _coord(_learned().get(name))
+    return _coord(_learned().get(name)) or _coord(_seed()["points"].get(name))
 
 
 def cacheable(school_name: str) -> bool:

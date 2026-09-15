@@ -1,4 +1,4 @@
-"""账号状态：四种、与自动打卡开关独立、只由认证故障决定；测试一律不打真实学校。"""
+"""账号状态。"""
 from __future__ import annotations
 
 import pytest
@@ -12,7 +12,7 @@ from app.csu.cas import CasIpFrozenError
 from app.csu.zhxg import ZhxgError
 from app.errors import SecretDecryptError
 from app.main import app as fastapi_app
-from app.views import AUTH_STATUS, account_status
+from app.views import account_status, today_result
 
 USER_EMAIL = "status-test@example.com"
 
@@ -21,7 +21,7 @@ STATUS_CASES = [
     ("bad_credentials", "密码错误", "err"),
     ("locked", "账号锁定", "err"),
     ("other", "其他故障", "err"),
-    ("something-from-the-future", "其他故障", "err"),   # 未知取值按最保守的处理
+    ("something-from-the-future", "其他故障", "err"),
 ]
 
 
@@ -32,8 +32,7 @@ def make_account(user_id: int, username: str | None = None, **overrides) -> dict
     now = to_local_iso(local_now(cfg.config.tz))
     row = {
         "user_id": user_id, "csu_username": username or f"9{next(_counter):08d}", "password_enc": encrypt_secret("pw"),
-        "enabled": 1,
-        "jd": 112.936833, "wd": 28.157238, "dkdz": "升华8栋", "created_at": now, "updated_at": now,
+        "enabled": 1, "dkdz": "升华8栋", "created_at": now, "updated_at": now,
     }
     row.update(overrides)
     return db.insert_account(row)
@@ -62,7 +61,6 @@ def ui_login(client: TestClient, email: str) -> None:
 @pytest.mark.parametrize(("kind", "text", "cls"), STATUS_CASES)
 def test_four_states_and_colors(kind, text, cls):
     assert account_status({"auth_error": kind}) == {"text": text, "cls": cls}
-    assert AUTH_STATUS[kind]["0" if False else 0] if False else True  # 占位：常量表本身不参与断言
 
 
 def test_status_ignores_last_checkin_result_and_login_state():
@@ -71,6 +69,21 @@ def test_status_ignores_last_checkin_result_and_login_state():
 
     not_logged_in = {"auth_error": "", "token": "", "token_at": None}
     assert account_status(not_logged_in)["text"] == "正常"
+
+
+def test_no_task_stays_visible_until_reenabled(monkeypatch):
+    monkeypatch.setattr("app.views._now", lambda: ("2026-09-15T19:00:00", "19:00"))
+    account = {"enabled": 0, "last_status": "no_task", "last_run_at": "2026-09-14T20:00:00"}
+    assert today_result(account) == {"label": "不用打卡", "cls": ""}
+
+    account["enabled"] = 1
+    assert today_result(account) == {"label": "未到时间", "cls": ""}
+
+
+def test_disabled_account_is_not_waiting(monkeypatch):
+    monkeypatch.setattr("app.views._now", lambda: ("2026-09-15T19:00:00", "19:00"))
+    account = {"enabled": 0, "last_status": None, "last_run_at": None}
+    assert today_result(account) == {"label": "已暂停", "cls": ""}
 
 
 def test_status_survives_next_day(user):
@@ -90,7 +103,7 @@ def test_toggle_does_not_change_status(client, user):
 
     response = client.post(f"/ui/accounts/{account['id']}/toggle")
     assert response.status_code == 200
-    assert "已停用" not in response.text and "停用自动打卡" not in response.text
+    assert "已暂停" in response.text
 
     row = db.get_account_by_id(account["id"])
     assert row["enabled"] == 0, "开关本身要生效"
@@ -103,7 +116,7 @@ def test_auth_success_clears_the_failure(client, user, monkeypatch):
     db.set_auth_error(account["id"], "bad_credentials")
 
     ui_login(client, USER_EMAIL)
-    client.get("/ui/accounts")          # 只刷新页面：状态必须还在
+    client.get("/ui/accounts")
     assert db.get_account_by_id(account["id"])["auth_error"] == "bad_credentials"
     monkeypatch.setattr("app.accounts.verify_login", lambda *_a, **_k: {
         "location": {"canDk": True, "yxMc": "升华8栋"}, "address": "升华8栋",
@@ -147,9 +160,9 @@ def test_engine_clears_failure_after_successful_login(user, monkeypatch):
     ("CAS 要求输入验证码，但自动识别不可用（未安装 ddddocr 或识别失败）", "other"),
     ("CAS 验证码连续 2 次未通过，请先在浏览器登录一次后再试", "other"),
     ("账号未激活，请先在统一身份认证平台激活", "other"),
-    ("CAS 登录失败：会话已失效", None),                 # 重新登录即可，不是账号故障
+    ("CAS 登录失败：会话已失效", None),
     ("HTTPSConnectionPool(host='ca.csu.edu.cn'): Read timed out", None),
-    ("打卡点距离超出 300 米", None),                     # 打卡阶段/执行问题
+    ("打卡点距离超出 300 米", None),
 ])
 def test_failure_classification(message, kind):
     error = RuntimeError(message)
@@ -289,13 +302,13 @@ def test_log_scrubs_secrets_inside_the_message(monkeypatch):
     ('Set-Cookie: JSESSIONID=ABC123DEF456; Path=/', "ABC123DEF456"),
     ('{"cookies": "a=b; c=d"}', "a=b; c=d"),
     ('https://ca.csu.edu.cn/authserver/login?ticket=ST-123456-abcdef', "ST-123456-abcdef"),
-    ('{"password": "FAKE FIRST SECOND"}', "FAKE FIRST SECOND"),      # 值里有空格
+    ('{"password": "FAKE FIRST SECOND"}', "FAKE FIRST SECOND"),
     ('{"token": "abc def ghi jkl"}', "abc def ghi jkl"),
-    ("{'pwd': 'pw with spaces'}", "pw with spaces"),                 # 单引号 JSON
-    ('{"token": "a\\"b secret"}', 'b secret'),                      # 值里有转义引号
-    ('{"cookie": "FAKE_FIRST, FAKE_SECOND"}', "FAKE_FIRST, FAKE_SECOND"),   # 值里有逗号
-    ('{"cookies": "FAKE_FIRST, FAKE_SECOND"}', "FAKE_FIRST, FAKE_SECOND"),  # 复数形式
-    ('{"cookie": "secret (paren)"}', "secret (paren)"),                     # 值里有右括号
+    ("{'pwd': 'pw with spaces'}", "pw with spaces"),
+    ('{"token": "a\\"b secret"}', 'b secret'),
+    ('{"cookie": "FAKE_FIRST, FAKE_SECOND"}', "FAKE_FIRST, FAKE_SECOND"),
+    ('{"cookies": "FAKE_FIRST, FAKE_SECOND"}', "FAKE_FIRST, FAKE_SECOND"),
+    ('{"cookie": "secret (paren)"}', "secret (paren)"),
     ('{"token": "a, b, c"}', "a, b, c"),
 ])
 def test_secrets_inside_messages_never_reach_the_log(monkeypatch, poisoned, leak):

@@ -44,7 +44,6 @@ def transaction() -> Iterator[None]:
 _SCHEMA = (pathlib.Path(__file__).with_name("schema.sql")).read_text()
 
 
-
 def _structure(conn: sqlite3.Connection) -> dict[str, set[str]]:
     names = [row[0] for row in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
@@ -286,15 +285,16 @@ def set_auth_error(account_id: int, kind: AuthError | str) -> bool:
 
 
 def insert_account(row: dict) -> dict | None:
-    payload = {"token": "", "casual": None, "cookies": None, "token_at": None, "auth_error": ""}
+    payload = {"token": "", "casual": None, "cookies": None, "token_at": None,
+               "auth_error": "", "dkdz": "", "jd": None, "wd": None}
     payload.update(row)
     payload = _seal(payload)
     _exec(
         """INSERT INTO accounts (user_id, csu_username, password_enc, enabled,
-                                 jd, wd, dkdz, token, casual, cookies, token_at,
+                                 jd, wd, dkdz, token, casual, cookies, token_at, auth_error,
                                  created_at, updated_at)
            VALUES (:user_id, :csu_username, :password_enc, :enabled,
-                   :jd, :wd, :dkdz, :token, :casual, :cookies, :token_at,
+                   :jd, :wd, :dkdz, :token, :casual, :cookies, :token_at, :auth_error,
                    :created_at, :updated_at)""",
         payload,
     )

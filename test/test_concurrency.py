@@ -88,7 +88,7 @@ def test_account_quota_cannot_be_exceeded_concurrently(monkeypatch):
 
 def _try_add(create_or_update, user, username):
     try:
-        create_or_update(user, {"csuUsername": username, "password": "x", "jd": 112.9, "wd": 28.1})
+        create_or_update(user, {"csuUsername": username, "password": "x"})
         return None
     except Exception as error:  # noqa: BLE001 - 收集被拒的原因
         return error
@@ -107,8 +107,7 @@ def test_relogin_cooldown_lives_in_service_layer():
     user = db.upsert_user("relogin-cool@example.com", now)
     account = db.insert_account({
         "user_id": user["id"], "csu_username": "977800001", "password_enc": encrypt_secret("x"),
-        "enabled": 1,
-        "jd": 112.9, "wd": 28.1, "dkdz": "", "created_at": now, "updated_at": now,
+        "enabled": 1, "dkdz": "", "created_at": now, "updated_at": now,
     })
     first = relogin(db.get_account_by_id(account["id"]))
     assert first["ok"] is False

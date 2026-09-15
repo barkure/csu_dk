@@ -7,11 +7,12 @@ from .domain import AuthError, CheckinStatus
 
 STATUS_TEXT = {
     CheckinStatus.SUCCESS: "打卡成功", CheckinStatus.SKIPPED: "已打过卡",
-    CheckinStatus.WAITING: "未到时间", CheckinStatus.FAILED: "打卡失败",
+    CheckinStatus.NO_TASK: "不用打卡", CheckinStatus.WAITING: "未到时间",
+    CheckinStatus.FAILED: "打卡失败",
 }
-STATUS_CLASS = {
+BADGE_CLASS = {
     CheckinStatus.SUCCESS: "ok", CheckinStatus.SKIPPED: "",
-    CheckinStatus.WAITING: "", CheckinStatus.FAILED: "err",
+    CheckinStatus.NO_TASK: "", CheckinStatus.WAITING: "", CheckinStatus.FAILED: "err",
 }
 
 
@@ -41,15 +42,19 @@ def window_passed(_account: dict) -> bool:
 
 
 def today_result(account: dict) -> dict:
-    """卡片只有三种结果；今天没记录时，过了窗口算失败，否则算未到时间。"""
+    """返回账号的今日结果。"""
     today = _now()[0][:10]
     fresh = bool(account.get("last_status")) and str(account.get("last_run_at") or "")[:10] == today
     if not fresh:
         if not account.get("enabled"):
-            return {"label": "未到时间", "cls": ""}
+            if account.get("last_status") == CheckinStatus.NO_TASK:
+                return {"label": "不用打卡", "cls": ""}
+            return {"label": "已暂停", "cls": ""}
         return {"label": "打卡失败", "cls": "err"} if window_passed(account) else {"label": "未到时间", "cls": ""}
     if account["last_status"] in (CheckinStatus.SUCCESS, CheckinStatus.SKIPPED):
         return {"label": "打卡成功", "cls": "ok"}
+    if account["last_status"] == CheckinStatus.NO_TASK:
+        return {"label": "不用打卡", "cls": ""}
     if account["last_status"] == CheckinStatus.FAILED:
         return {"label": "打卡失败", "cls": "err"}
     return {"label": "未到时间", "cls": ""}

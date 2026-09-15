@@ -1,4 +1,4 @@
-"""请求来源判定（限流与本机调试回显都要用）。"""
+"""请求来源判定。"""
 from __future__ import annotations
 
 from fastapi import Request
@@ -10,7 +10,7 @@ LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 def client_ip(request: Request) -> str:
-    """只在明确配置 trust_proxy 时才信 x-forwarded-for（默认它完全由客户端控制）。"""
+    """仅信任代理提供的来源地址。"""
     if cfg.config.trust_proxy:
         forwarded = request.headers.get("x-forwarded-for")
         if forwarded:
@@ -23,11 +23,7 @@ def _hostname(request: Request) -> str:
 
 
 def served_over_https(request: Request) -> bool:
-    """请求是不是走 HTTPS 进来的。
-
-    直连 TLS 时看 ASGI 自己的 scheme；经过反向代理时只看受信代理写的转发头
-    （多级代理会写成逗号分隔的列表，取第一段）。
-    """
+    """判断请求是否使用 HTTPS。"""
     if request.url.scheme == "https":
         return True
     if not cfg.config.trust_proxy:
@@ -37,7 +33,7 @@ def served_over_https(request: Request) -> bool:
 
 
 def is_local_request(request: Request) -> bool:
-    """本机判定要过三道关卡：带代理头 → 不算；Host 非本机 → 不算；最后才信 socket。"""
+    """判断请求是否来自本机。"""
     if request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip"):
         return False
     host = _hostname(request)

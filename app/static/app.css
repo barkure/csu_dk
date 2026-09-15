@@ -42,8 +42,20 @@ body {
 
 body.center {
   display: flex; align-items: center; justify-content: center;
+  flex-direction: column;
   min-height: 100vh; padding: 24px;
 }
+
+.site-footer {
+  max-width: 1040px; margin: 36px auto 0;
+  color: var(--muted); text-align: center; font-size: 13px;
+}
+.site-footer a {
+  color: color-mix(in srgb, var(--muted) 50%, var(--ink));
+  text-decoration: none;
+}
+.site-footer a:hover { color: var(--ink); }
+body.center .site-footer { margin-top: 24px; }
 
 
 
@@ -381,7 +393,7 @@ td.right { text-align: right; }
 .msg { font-size: 13px; color: var(--muted); min-height: 20px; margin: 0; }
 
 .msg:empty { display: none; }
-.msg.ok { color: var(--ink); }
+.msg.ok { color: var(--ok); }
 .msg.err { color: var(--danger); font-weight: 700; }
 
 b.err, td.err { color: var(--danger); }

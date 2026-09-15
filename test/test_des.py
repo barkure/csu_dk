@@ -1,4 +1,4 @@
-"""请求体加密：与学校前端逐字节一致（基准向量取自 Node 版 crypto-js 的输出）。"""
+"""请求体加密。"""
 from __future__ import annotations
 
 from app.csu.des import des_encrypt, generate_casual
@@ -29,4 +29,4 @@ def test_casual_is_16_alnum():
     value = generate_casual()
     assert len(value) == 16
     assert value.isalnum()
-    assert generate_casual(8) != generate_casual(8) or True  # 随机，不做强断言
+    assert len(generate_casual(8)) == 8

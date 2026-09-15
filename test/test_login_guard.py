@@ -68,9 +68,7 @@ def make_account(user_id: int, **overrides) -> dict:
     now = local_now(cfg.config.tz)
     row = {
         "user_id": user_id, "csu_username": f"9{next(_counter):08d}",
-        "password_enc": encrypt_secret("whatever"), "enabled": 1,
-
-        "jd": 112.936833, "wd": 28.157238, "dkdz": "",
+        "password_enc": encrypt_secret("whatever"), "enabled": 1, "dkdz": "",
         "created_at": to_local_iso(now), "updated_at": to_local_iso(now),
     }
     row.update(overrides)
@@ -140,8 +138,7 @@ def test_save_during_pause_neither_talks_to_school_nor_writes_db(user, real_logi
     before = db.list_accounts(user["id"])
 
     with pytest.raises(LoginPausedError):
-        accounts.create_or_update(user, {"csuUsername": USERNAME, "password": "pw",
-                                         "jd": 112.9, "wd": 28.1}, ip="1.2.3.4")
+        accounts.create_or_update(user, {"csuUsername": USERNAME, "password": "pw"}, ip="1.2.3.4")
 
     assert client.calls == 0, "暂停期间不该请求学校认证"
     assert db.list_accounts(user["id"]) == before, "验证失败不能改动数据库里的账号"

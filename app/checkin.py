@@ -40,9 +40,13 @@ _attempt_gap = (SlidingWindow(cfg.config.cas_attempt_gap_seconds * 1000, 1)
 
 NEEDS_RECREDENTIALS = re.compile(r"密码错误|用户名或密码|未激活|锁定|验证码|无法解密")
 _CREDENTIAL_ERRORS = (SecretDecryptError, MasterKeyMissingError, MasterKeyInvalidError)
+OK_CODE = "200"
+NO_TASK_CODE = "331"
+BUSINESS_CODES = frozenset({OK_CODE, NO_TASK_CODE})
 
 ENTRY_CHECKIN = "checkin"
 ENTRY_RELOGIN = "relogin"
+ENTRY_REFRESH = "refresh"
 ENTRY_CREATE = "create_account"
 ENTRY_UPDATE = "update_account"
 USER_ENTRIES = frozenset({ENTRY_CREATE, ENTRY_UPDATE})
@@ -278,16 +282,12 @@ def mark_auth_failure(account_id: int, error: Exception, message: str) -> AuthEr
 
 
 def has_fresh_login(account: dict) -> bool:
-    """判据是同一自然日（学校 JWT 当天 24:00 到期），token_ttl_seconds 只是兜底上限。"""
+    """判断登录态是否属于今天。"""
     if not account.get("token") or not account.get("token_at"):
         return False
     now = local_now(cfg.config.tz)
     issued = parse_local(account["token_at"])
-    if issued > now:
-        return False
-    if account["token_at"][:10] != to_local_iso(now)[:10]:
-        return False
-    return (now - issued).total_seconds() < cfg.config.token_ttl_seconds
+    return issued <= now and account["token_at"][:10] == to_local_iso(now)[:10]
 
 
 def persist_state(account_id: int, client: ZhxgClient) -> None:
@@ -341,6 +341,23 @@ def _relogin_body(account: dict, *, ip: str | None = None) -> dict:
         return {"ok": False, "message": message}
 
 
+def refresh_login(account: dict) -> dict:
+    """调度刷新当天登录态，不打卡。"""
+    return _locked(account, _refresh_login_body)
+
+
+def _refresh_login_body(account: dict) -> dict:
+    try:
+        _login(account, entry=ENTRY_REFRESH)
+        return {"ok": True, "message": "已刷新登录态"}
+    except (LoginPausedError, RateLimitError) as error:
+        return {"ok": False, "deferred": True, "message": str(error)}
+    except Exception as error:  # noqa: BLE001 - 刷新失败只记账号故障，不写成打卡记录
+        message = str(error)
+        mark_auth_failure(account["id"], error, message)
+        return {"ok": False, "message": message}
+
+
 def _paused_result(error: Exception) -> CheckinResult:
     until = login_paused_until() or (time.time() + cfg.config.ip_freeze_cooldown_seconds)
     return {"status": CheckinStatus.FAILED, "message": str(error), "dksj": None,
@@ -351,23 +368,50 @@ def run_checkin(account: AccountRow | dict, trigger: Trigger | str = Trigger.SCH
     return _locked(account, lambda fresh: _run(fresh, trigger))
 
 
+def _coords_for(account: dict) -> tuple[float, float] | None:
+    name = account.get("dkdz") or ""
+    if buildings.cacheable(name):
+        return buildings.resolve(name)
+    if account.get("jd") is None or account.get("wd") is None:
+        return None
+    return float(account["jd"]), float(account["wd"])
+
+
+def _save_location(account: dict, name: str, coord: tuple[float, float] | None = None) -> None:
+    name = (name or "").strip()
+    fields: dict = {}
+    if name and name != account.get("dkdz"):
+        fields["dkdz"] = name
+        account["dkdz"] = name
+    if coord is not None:
+        if buildings.cacheable(name or account.get("dkdz") or ""):
+            if account.get("jd") is not None or account.get("wd") is not None:
+                fields["jd"] = None
+                fields["wd"] = None
+                account["jd"] = account["wd"] = None
+        elif (account.get("jd"), account.get("wd")) != (coord[0], coord[1]):
+            fields["jd"] = coord[0]
+            fields["wd"] = coord[1]
+            account["jd"], account["wd"] = coord
+    if not fields:
+        return
+    fields["updated_at"] = to_local_iso(local_now(cfg.config.tz))
+    db.update_account(account["id"], fields)
+
+
 def _determine_location(client, account) -> tuple[float, float, dict] | None:
-    """重新测定并保存可用位置。"""
+    """测定可用坐标：宿舍写入楼栋缓存，租房写入账号。"""
+    previous = account.get("dkdz") or "未测"
     try:
-        coord, school_name, verdict, _ = buildings.for_student(client)
+        coord, school_name, verdict, source = buildings.for_student(client, account.get("dkdz") or "")
     except Exception:  # noqa: BLE001 - 重测只是补救，失败不能掩盖原本的打卡结果
         return None
     if not verdict.get("canDk"):
         return None
-    db.update_account(account["id"], {
-        "jd": coord[0], "wd": coord[1],
-        "dkdz": school_name or account.get("dkdz") or "",
-        "updated_at": to_local_iso(local_now(cfg.config.tz)),
-    })
-    log_event("checkin.relocated", level="warning", account_id=account["id"],
-              user_id=account.get("user_id"), building=school_name,
-              previous=("未测" if account.get("jd") is None
-                        else f"{float(account['jd']):.6f},{float(account['wd']):.6f}"))
+    _save_location(account, school_name, coord)
+    if source == "located":
+        log_event("checkin.relocated", level="warning", account_id=account["id"],
+                  user_id=account.get("user_id"), building=school_name, previous=previous)
     return coord[0], coord[1], verdict
 
 
@@ -380,23 +424,22 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
         status = CheckinStatus.WAITING if "未到" in str(reason) else CheckinStatus.FAILED
         return status, f"当前不可打卡：{reason}", None
 
-    jd = None if account.get("jd") is None else float(account["jd"])
-    wd = None if account.get("wd") is None else float(account["wd"])
-    location = (client.check_location(jd, wd).get("data") or {}) if jd is not None else {}
-    if jd is None or not location.get("canDk"):
+    cached = _coords_for(account)
+    location = (client.check_location(*cached).get("data") or {}) if cached else {}
+    coord = cached if cached and location.get("canDk") else None
+    if coord is None:
         measured = _determine_location(client, account)
         if measured:
-            jd, wd, location = measured
-    if not account.get("dkdz") and location.get("yxMc"):
-        db.update_account(account["id"], {"dkdz": location["yxMc"]})
-    if jd is None or not location.get("canDk"):
+            coord, location = (measured[0], measured[1]), measured[2]
+    _save_location(account, location.get("yxMc") or "", coord)
+    if coord is None or not location.get("canDk"):
         message = (f"位置校验未通过：{location.get('msg') or location.get('reason') or '—'}"
                    f"（距 {location.get('yxMc') or '?'} {location.get('pcMi') or '?'} 米）")
         return CheckinStatus.FAILED, message, None
 
-    result = client.submit_dk(jd=jd, wd=wd, dkbc=data.get("dkbc") or "",
+    result = client.submit_dk(jd=coord[0], wd=coord[1], dkbc=data.get("dkbc") or "",
                               dkdz=location.get("yxMc") or account.get("dkdz") or "")
-    if result.get("code") != "200":
+    if result.get("code") != OK_CODE:
         raise RuntimeError(f"提交失败：{result.get('message') or str(result)[:160]}")
     after = client.dk_status().get("data") or {}
     dksj = after.get("dksj")
@@ -405,37 +448,55 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
     return CheckinStatus.FAILED, "提交返回成功但复核未通过，请手动确认", dksj
 
 
+def _business_status(account: dict) -> tuple[ZhxgClient, dict, str]:
+    client = build_client(account)
+    response: dict = {}
+    for force in (False, True):
+        if force or not has_fresh_login(account) or not client.token:
+            try:
+                client = _login(account, entry=ENTRY_CHECKIN)
+            except (LoginPausedError, CasIpFrozenError, RateLimitError):
+                raise
+            except Exception as error:
+                mark_auth_failure(account["id"], error, str(error))
+                raise
+        response = client.dk_status()
+        code = str(response.get("code") or "")
+        if code in BUSINESS_CODES:
+            return client, response, code
+    return client, response, str(response.get("code") or "")
+
+
 def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
     run_at = to_local_iso(local_now(cfg.config.tz))
     status, message, dksj = CheckinStatus.FAILED, "", None
-    stage = "checkin"
 
     try:
         if not account.get("enabled"):
             raise RuntimeError("账号已停用")
 
-        client = build_client(account)
-        response: dict = {}
-        for force in (False, True):
-            if force or not has_fresh_login(account) or not client.token:
-                stage = "login"
-                client = _login(account, entry=ENTRY_CHECKIN)
-                stage = "checkin"
-            response = client.dk_status()
-            if response.get("code") == "200":
-                break
-        if response.get("code") != "200":
+        client, response, code = _business_status(account)
+        if code == NO_TASK_CODE:
+            status = CheckinStatus.NO_TASK
+            message = "无打卡事项"
+        elif code != OK_CODE:
             raise RuntimeError(f"业务接口返回异常：{str(response)[:160]}")
-
-        persist_state(account["id"], client)
-        status, message, dksj = _submit(client, account, response.get("data") or {})
+        else:
+            persist_state(account["id"], client)
+            status, message, dksj = _submit(client, account, response.get("data") or {})
     except (LoginPausedError, CasIpFrozenError) as error:
         return _paused_result(error)
+    except RateLimitError as error:
+        if trigger == Trigger.SCHEDULE:
+            return {"status": CheckinStatus.WAITING, "message": str(error), "dksj": None,
+                    "deferred": True}
+        message = str(error)
     except Exception as error:  # noqa: BLE001 - 打卡失败要落库并展示，不能中断整轮调度
         message = str(error)
-        if stage == "login":
-            mark_auth_failure(account["id"], error, message)
 
     db.add_record(account["id"], run_at, trigger, status, message, dksj)
-    db.update_account(account["id"], {"last_run_at": run_at, "last_status": status, "last_message": message})
+    fields = {"last_run_at": run_at, "last_status": status, "last_message": message}
+    if status == CheckinStatus.NO_TASK:
+        fields["enabled"] = 0
+    db.update_account(account["id"], fields)
     return {"status": status, "message": message, "dksj": dksj}

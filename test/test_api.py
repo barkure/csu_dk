@@ -1,4 +1,4 @@
-"""接口层测试：不联网、不碰学校（要真实登录的路径在 test_e2e.py）。"""
+"""接口测试。"""
 from __future__ import annotations
 
 import itertools
@@ -27,7 +27,7 @@ def inject_code(email: str, code: str, minutes: int = 10) -> None:
     db.insert_login_code(
         email,
         auth.hash_login_code(email, code),
-        to_local_iso(now + timedelta(minutes=minutes)),   # 有效期要真的在未来
+        to_local_iso(now + timedelta(minutes=minutes)),
         to_local_iso(now),
     )
 
@@ -42,7 +42,7 @@ def test_health(client):
     body = client.get("/api/health").json()
     assert body["ok"] is True
     assert body["checkinWindow"] == {"start": "20:00", "end": "23:30"}
-    assert body["mail"] is False  # 测试环境没配腾讯云邮件推送
+    assert body["mail"] is False
 
 
 def test_requires_login(client):
@@ -95,8 +95,7 @@ def make_account(user_id: int, username: str, **overrides) -> dict:
     now = to_local_iso(local_now(cfg.config.tz))
     row = {
         "user_id": user_id, "csu_username": username, "password_enc": encrypt_secret("whatever"),
-        "enabled": 1,
-        "jd": 112.936833, "wd": 28.157238, "dkdz": "", "created_at": now, "updated_at": now,
+        "enabled": 1, "dkdz": "", "created_at": now, "updated_at": now,
     }
     row.update(overrides)
     return db.insert_account(row)
@@ -126,7 +125,7 @@ def test_add_account_during_login_pause_returns_503(owner, real_login):
     username = "977400001"
 
     response = client.post("/api/accounts", json={
-        "csuUsername": username, "password": "x", "jd": 112.936833, "wd": 28.157238,
+        "csuUsername": username, "password": "x",
     })
 
     assert response.status_code == 503, response.text
@@ -138,7 +137,7 @@ def test_account_limit_per_user(owner, monkeypatch):
     client, _, _ = owner
     monkeypatch.setattr(cfg, "config", cfg.config.model_copy(update={"max_accounts_per_user": 1}))
     response = client.post("/api/accounts", json={
-        "csuUsername": "299999999", "password": "x", "jd": 112.9, "wd": 28.1,
+        "csuUsername": "299999999", "password": "x",
     })
     assert response.status_code == 400
     assert "最多只能托管" in response.json()["error"]
@@ -158,7 +157,7 @@ def test_post_without_coordinates_only_verifies_login(owner, monkeypatch):
 
     def fake_verify(username, password, **kwargs):
         seen.update({"username": username, **kwargs})
-        return {"location": None, "address": None, "jd": None, "wd": None, "session": {},
+        return {"location": None, "address": None, "session": {},
                 "window": ("20:00", "22:30")}
 
     monkeypatch.setattr("app.accounts.verify_login", fake_verify)
@@ -166,7 +165,8 @@ def test_post_without_coordinates_only_verifies_login(owner, monkeypatch):
     assert response.status_code == 200, response.text
     assert seen["username"] == "988888888"
     account = db.get_account_by_username(user["id"], "988888888")
-    assert account["jd"] is None and account["wd"] is None and account["dkdz"] == ""
+    assert account["dkdz"] == ""
+    assert account["jd"] is None
     db.delete_account(user["id"], account["id"])
 
 
@@ -191,11 +191,11 @@ def test_accounts_are_isolated_per_user(owner):
     login(other, "outsider@example.com")
 
     assert other.get("/api/accounts").json()["accounts"] == []
-    assert other.patch(f"/api/accounts/{account['id']}", json={"jd": 1, "wd": 1}).status_code == 404
+    assert other.patch(f"/api/accounts/{account['id']}", json={"enabled": False}).status_code == 404
     assert other.delete(f"/api/accounts/{account['id']}").status_code == 404
     assert other.get(f"/api/accounts/{account['id']}/records").status_code == 404
     assert other.post(f"/api/accounts/{account['id']}/run").status_code == 404
-    assert db.get_account_by_id(account["id"])["jd"] == 112.936833
+    assert db.get_account_by_id(account["id"])["enabled"] == 1
 
 
 def test_static_pages_not_cached(client):
@@ -233,7 +233,7 @@ def test_add_account_happy_path_stores_everything(owner, monkeypatch):
     })
 
     response = client.post("/api/accounts", json={
-        "csuUsername": "977300001", "password": "x", "jd": 112.936833, "wd": 28.157238,
+        "csuUsername": "977300001", "password": "x",
     })
     assert response.status_code == 200, response.text
     account = db.get_account_by_username(user["id"], "977300001")
@@ -250,7 +250,7 @@ def test_add_account_happy_path_via_ui_form(owner, monkeypatch):
 
     def fake_verify(username, password, **kwargs):
         seen.update({"username": username, **kwargs})
-        return {"location": None, "address": None, "jd": None, "wd": None,
+        return {"location": None, "address": None,
                 "session": {"token": "tok2", "casual": "cas2", "cookies": "[]"},
                 "window": ("20:00", "22:30")}
 
@@ -259,7 +259,7 @@ def test_add_account_happy_path_via_ui_form(owner, monkeypatch):
     html = client.post("/ui/accounts", data={"csuUsername": "977300002", "password": "x"}).text
     assert "验证通过，已保存" in html
     account = db.get_account_by_username(user["id"], "977300002")
-    assert (account["jd"], account["wd"]) == (None, None), "定位留到首次打卡"
+    assert account["dkdz"] == "", "楼栋留到首次打卡"
     assert account["token"] == "tok2"
     db.delete_account(user["id"], account["id"])
 
@@ -280,18 +280,18 @@ def test_captcha_consume_rolls_back_when_session_creation_fails(client, monkeypa
     assert after["used"] == 0, "事务回滚后验证码应当还是可用的"
 
 
-def test_edit_account_without_coordinates_keeps_them_empty(owner, monkeypatch):
+def test_edit_account_keeps_building_empty_until_checkin(owner, monkeypatch):
     client, user, _ = owner
     monkeypatch.setattr("app.accounts.verify_login", lambda *_a, **_kw: {
-        "location": None, "address": None, "jd": None, "wd": None, "session": {}, "window": (None, None),
+        "location": None, "address": None, "session": {}, "window": (None, None),
     })
     created = client.post("/api/accounts", json={"csuUsername": "977400001", "password": "x"}).json()
     account = db.get_account_by_username(user["id"], "977400001")
     assert created["account"]["csuUsername"] == "977400001"
-    assert account["jd"] is None and account["wd"] is None
+    assert account["dkdz"] == ""
 
     response = client.post("/api/accounts", json={"csuUsername": "977400001", "password": "new"})
     assert response.status_code == 200, response.text
     saved = db.get_account_by_id(account["id"])
-    assert (saved["jd"], saved["wd"]) == (None, None)
+    assert saved["dkdz"] == ""
     db.delete_account(user["id"], account["id"])

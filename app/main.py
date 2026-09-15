@@ -216,7 +216,7 @@ def patch_account(request: Request, account_id: int, payload: AccountBody | None
 @app.delete("/api/accounts/{account_id}")
 def delete_account(request: Request, account_id: int) -> dict:
     user = _current_user(request)
-    if not db.delete_account(user["id"], account_id):
+    if not accounts_service.delete(user, account_id):
         return JSONResponse({"error": "账号不存在"}, status_code=404)
     return {"ok": True}
 

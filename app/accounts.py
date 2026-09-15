@@ -8,6 +8,7 @@ from .clock import local_now, to_local_iso
 from .crypto import decrypt_secret, encrypt_secret
 from .errors import AppError, BadRequestError
 from .locks import lock_for
+from .log import log_event
 
 
 def _now_iso() -> str:
@@ -58,9 +59,9 @@ def _create_or_update_locked(user: dict, payload: dict, *, ip: str | None = None
     fields = {
         "enabled": (existing["enabled"] if existing else 1) if payload.get("enabled") is None
         else (0 if payload["enabled"] is False else 1),
+        "dkdz": (existing or {}).get("dkdz") or "",
         "jd": (existing or {}).get("jd"),
         "wd": (existing or {}).get("wd"),
-        "dkdz": (existing or {}).get("dkdz") or "",
         "updated_at": _now_iso(),
     }
 
@@ -122,3 +123,13 @@ def update(user: dict, account_id: int, payload: dict, *, ip: str | None = None)
             })
     db.update_account(account_id, fields)
     return {"account_id": account_id}
+
+
+def delete(user: dict, account_id: int) -> bool:
+    """删除账号并记录审计日志。"""
+    account = db.get_account(user["id"], account_id)
+    if not account or not db.delete_account(user["id"], account_id):
+        return False
+    log_event("account.deleted", account_id=account_id, user_id=user["id"],
+              csu_username_tail=(account.get("csu_username") or "")[-4:])
+    return True

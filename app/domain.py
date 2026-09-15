@@ -17,6 +17,7 @@ class AuthError(StrEnum):
 class CheckinStatus(StrEnum):
     SUCCESS = "success"
     SKIPPED = "skipped"      # 学校回"今日已打卡"
+    NO_TASK = "no_task"
     WAITING = "waiting"
     FAILED = "failed"
 
@@ -105,3 +106,4 @@ class CheckinResult(TypedDict):
     message: str
     dksj: NotRequired[str | None]
     paused_until: NotRequired[float]
+    deferred: NotRequired[bool]

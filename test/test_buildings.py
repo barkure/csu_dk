@@ -65,12 +65,12 @@ class TestLearn:
     def test_写坏的文件当空处理(self):
         buildings._learned_path().write_text("{ 不是 json", encoding="utf-8")
         buildings.reload()
-        assert buildings.resolve("升华8栋")           # 种子仍然可用
-        assert buildings.resolve("升华2栋") is None   # 学到的丢掉了，不会炸
+        assert buildings.resolve("升华8栋")
+        assert buildings.resolve("升华2栋") is None
 
-    def test_种子优先于学到的(self):
+    def test_学到的优先于种子(self):
         buildings.learn("升华8栋", (112.9, 28.1))
-        assert buildings.resolve("升华8栋") != (112.9, 28.1)
+        assert buildings.resolve("升华8栋") == (112.9, 28.1)
 
 
 class TestGeometry:
@@ -95,23 +95,23 @@ class TestGeometry:
 
 class TestLocate:
     @pytest.mark.parametrize("target", [
-        (112.935978, 28.158930),     # 同校区，几百米外
-        (112.927096, 28.175085),     # 另一个校区，1.7 公里外
-        (112.940000, 28.220000),     # 湘雅，7 公里外
+        (112.935978, 28.158930),
+        (112.927096, 28.175085),
+        (112.940000, 28.220000),
     ])
     def test_能测定申报点(self, target):
         school = FakeSchool(target)
         found, name = buildings.locate(school, (112.936833, 28.157238))
         assert haversine(found, target) < 5.0, f"误差 {haversine(found, target):.1f} 米"
         assert name == "升华24栋"
-        assert school.calls == 4          # 3 个探点 + 1 次验证
+        assert school.calls == 4
 
     def test_异地也能测出来(self):
-        target = (116.425305, 39.862858)  # 北京，离基准 1350 公里
+        target = (116.425305, 39.862858)
         school = FakeSchool(target)
         found, _ = buildings.locate(school, (112.936833, 28.157238))
         assert haversine(found, target) < 20.0
-        assert school.calls == 8          # 两轮 ×（3 探点 + 1 验证）
+        assert school.calls == 8
 
     def test_定位读不通就报错(self):
         class Broken:
@@ -129,7 +129,7 @@ class TestForStudent:
         assert (source, name) == ("cache", "升华8栋")
         assert coord == buildings.resolve("升华8栋")
         assert verdict["canDk"]
-        assert school.calls == 2          # 一次问名字 + 一次确认缓存点
+        assert school.calls == 2
 
     def test_没测过的楼栋测一次并记住(self):
         school = FakeSchool((112.936292, 28.156628), name="升华2栋")
@@ -137,7 +137,7 @@ class TestForStudent:
         coord, name, _, source = buildings.for_student(school)
         assert (source, name) == ("located", "升华2栋")
         assert haversine(coord, (112.936292, 28.156628)) < 5.0
-        assert buildings.resolve("升华2栋") == coord      # 后面的人走缓存
+        assert buildings.resolve("升华2栋") == coord
 
     def test_缓存点学校不认就改走探点(self):
         school = FakeSchool((112.936292, 28.156628), name="升华8栋", can_dk=False)

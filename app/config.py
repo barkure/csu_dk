@@ -47,8 +47,8 @@ class Settings(BaseSettings):
     email_daily_max: int = Field(default=10, ge=1, le=1000)
     allowed_emails: Annotated[tuple[str, ...], NoDecode] = ()
     max_accounts_per_user: int = Field(default=5, ge=1, le=100, validation_alias="CSU_DK_MAX_ACCOUNTS")
-    max_sessions_per_user: int = Field(default=10, ge=1, le=100, validation_alias="CSU_DK_MAX_SESSIONS")
-    record_retention_days: int = Field(default=180, ge=1, le=3650)
+    max_sessions_per_user: int = Field(default=5, ge=1, le=100, validation_alias="CSU_DK_MAX_SESSIONS")
+    record_retention_days: int = Field(default=10, ge=1, le=3650)
 
     cas_concurrency: int = Field(default=1, ge=1, le=8)
     relogin_cooldown_seconds: int = Field(default=60, ge=1, le=86_400, validation_alias="CSU_DK_RELOGIN_COOLDOWN")
@@ -58,8 +58,9 @@ class Settings(BaseSettings):
                                          validation_alias="CSU_DK_CAS_ATTEMPT_GAP")
 
     scheduler_interval: int = Field(default=20, ge=1, le=3600, validation_alias="CSU_DK_SCHED_INTERVAL")
+    checkin_per_tick: int = Field(default=2, ge=1, le=100)
+    refresh_interval: int = Field(default=60, ge=1, le=86_400, validation_alias="CSU_DK_REFRESH_INTERVAL")
     maintenance_interval: int = Field(default=600, ge=1, le=86_400)
-    token_ttl_seconds: int = Field(default=86_400, ge=1, le=604_800, validation_alias="CSU_DK_TOKEN_TTL")
     ip_freeze_cooldown_seconds: int = Field(default=3600, ge=1, le=604_800,
                                             validation_alias="CSU_DK_IP_FREEZE_COOLDOWN")
     cred_fail_max: int = Field(default=3, ge=1, le=100, validation_alias="CSU_DK_CRED_FAIL_MAX")
