@@ -11,7 +11,6 @@ from . import accounts as accounts_service
 from . import auth, db, netinfo
 from . import config as cfg
 from .checkin import relogin, run_checkin
-from .clock import local_now, to_local_iso
 from .domain import CheckinStatus, Trigger
 from .errors import AppError, RateLimitError
 from .views import BADGE_CLASS, account_view, fmt, fmt_full, status_label
@@ -173,10 +172,7 @@ def ui_toggle(request: Request, account_id: int):
     if not account:
         return _render(request, "partials/accounts.html", _context(user))
 
-    db.update_account(account_id, {
-        "enabled": 0 if account["enabled"] else 1,
-        "updated_at": to_local_iso(local_now(cfg.config.tz)),
-    })
+    accounts_service.set_enabled(user, account_id, not bool(account["enabled"]), source="ui")
     return _render(request, "partials/accounts.html", _context(user, open_id=account_id))
 
 

@@ -282,6 +282,24 @@ def test_manage_button_toggles_between_expand_and_collapse(client):
     assert re.search(r">\s*收起\s*<", expanded)
 
 
+def test_toggle_account_records_audit_event(client, monkeypatch):
+    events = []
+    monkeypatch.setattr("app.log.log_event",
+                        lambda event, **fields: events.append((event, fields)))
+    ui_login(client, "ui-toggle-audit@example.com")
+    user = db.find_user_by_email("ui-toggle-audit@example.com")
+    account = make_account(user["id"], "977100002")
+
+    response = client.post(f"/ui/accounts/{account['id']}/toggle")
+
+    assert response.status_code == 200
+    assert db.get_account_by_id(account["id"])["enabled"] == 0
+    assert events == [("account.enabled_changed", {
+        "account_id": account["id"], "user_id": user["id"],
+        "csu_username_tail": "0002", "enabled": False, "source": "ui",
+    })]
+
+
 def test_address_has_its_own_column(client):
     ui_login(client, "ui-cols@example.com")
     user = db.find_user_by_email("ui-cols@example.com")

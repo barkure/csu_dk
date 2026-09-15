@@ -547,7 +547,10 @@ def test_engine_disables_account_when_school_has_no_task(user, monkeypatch):
     account = engine_account(user, monkeypatch, client)
     client.dk_status = lambda dklb="PA": {"code": "331", "message": "当前没有打卡事项", "data": None}
     logins = []
+    events = []
     monkeypatch.setattr("app.checkin.cas_login", lambda *_a, **_k: logins.append("login"))
+    monkeypatch.setattr("app.log.log_event",
+                        lambda event, **fields: events.append((event, fields)))
 
     result = engine_status(account)
 
@@ -557,6 +560,11 @@ def test_engine_disables_account_when_school_has_no_task(user, monkeypatch):
     saved = db.get_account_by_id(account["id"])
     assert saved["enabled"] == 0
     assert saved["auth_error"] == ""
+    assert events == [("account.enabled_changed", {
+        "account_id": account["id"], "user_id": user["id"],
+        "csu_username_tail": account["csu_username"][-4:],
+        "enabled": False, "source": "school_no_task",
+    })]
 
 
 def test_engine_still_fails_on_unknown_business_code(user, monkeypatch):

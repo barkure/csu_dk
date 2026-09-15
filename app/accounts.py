@@ -8,7 +8,7 @@ from .clock import local_now, to_local_iso
 from .crypto import decrypt_secret, encrypt_secret
 from .errors import AppError, BadRequestError
 from .locks import lock_for
-from .log import log_event
+from .log import EnabledChangeSource, log_account_enabled_changed, log_event
 
 
 def _now_iso() -> str:
@@ -122,7 +122,29 @@ def update(user: dict, account_id: int, payload: dict, *, ip: str | None = None)
                 "cookies": probe["session"]["cookies"], "token_at": _now_iso(),
             })
     db.update_account(account_id, fields)
+    if "enabled" in fields and fields["enabled"] != account["enabled"]:
+        _log_enabled_change(user, account, bool(fields["enabled"]), "api")
     return {"account_id": account_id}
+
+
+def set_enabled(user: dict, account_id: int, enabled: bool, *, source: EnabledChangeSource) -> bool:
+    """修改账号启用状态，并在状态发生变化时记录审计日志。"""
+    account = db.get_account(user["id"], account_id)
+    if not account:
+        return False
+    value = 1 if enabled else 0
+    if account["enabled"] == value:
+        return True
+    db.update_account(account_id, {"enabled": value, "updated_at": _now_iso()})
+    _log_enabled_change(user, account, enabled, source)
+    return True
+
+
+def _log_enabled_change(user: dict, account: dict, enabled: bool,
+                        source: EnabledChangeSource) -> None:
+    log_account_enabled_changed(user_id=user["id"], account_id=account["id"],
+                                username=account.get("csu_username") or "",
+                                enabled=enabled, source=source)
 
 
 def delete(user: dict, account_id: int) -> bool:

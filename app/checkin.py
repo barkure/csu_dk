@@ -22,7 +22,7 @@ from .errors import (
     SecretDecryptError,
 )
 from .locks import lock_for
-from .log import log_event
+from .log import log_account_enabled_changed, log_event
 from .ratelimit import FailureCooldown, SlidingWindow
 
 _login_paused_until = 0.0
@@ -511,4 +511,8 @@ def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
     if status == CheckinStatus.NO_TASK:
         fields["enabled"] = 0
     db.update_account(account["id"], fields)
+    if status == CheckinStatus.NO_TASK:
+        log_account_enabled_changed(user_id=account["user_id"], account_id=account["id"],
+                                    username=account.get("csu_username") or "",
+                                    enabled=False, source="school_no_task")
     return {"status": status, "message": message, "dksj": dksj}

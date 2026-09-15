@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 import structlog
 
@@ -52,6 +53,8 @@ structlog.configure(
 
 _logger = structlog.get_logger("csu-dk")
 
+EnabledChangeSource = Literal["ui", "api", "school_no_task"]
+
 
 def redact(fields: dict) -> dict:
     return {
@@ -62,6 +65,14 @@ def redact(fields: dict) -> dict:
 
 def log_event(event: str, **fields: object) -> None:
     _logger.info(event, **fields)
+
+
+def log_account_enabled_changed(*, user_id: int, account_id: int, username: str,
+                                enabled: bool, source: EnabledChangeSource) -> None:
+    """记录账号启用状态变更，不写入完整学号。"""
+    log_event("account.enabled_changed", account_id=account_id, user_id=user_id,
+              csu_username_tail=username[-4:] if username else "",
+              enabled=enabled, source=source)
 
 
 def warn_block(lines: list[str]) -> None:

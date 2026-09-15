@@ -179,10 +179,17 @@ def test_post_existing_account_without_coordinates_uses_saved_ones(owner):
     assert "经纬度" not in response.json()["error"]
 
 
-def test_disable_account(owner):
+def test_disable_account(owner, monkeypatch):
     client, _, account = owner
+    events = []
+    monkeypatch.setattr("app.log.log_event",
+                        lambda event, **fields: events.append((event, fields)))
     client.patch(f"/api/accounts/{account['id']}", json={"enabled": False})
     assert db.get_account_by_id(account["id"])["enabled"] == 0
+    assert events == [("account.enabled_changed", {
+        "account_id": account["id"], "user_id": account["user_id"],
+        "csu_username_tail": account["csu_username"][-4:], "enabled": False, "source": "api",
+    })]
 
 
 def test_accounts_are_isolated_per_user(owner):
