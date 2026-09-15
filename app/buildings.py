@@ -136,6 +136,7 @@ def check(client, point: tuple[float, float]) -> dict:
 
 
 def _ecef(point: tuple[float, float]) -> tuple[float, float, float]:
+    """按球形地球模型将经纬度转换为 ECEF 直角坐标。"""
     lat, lon = math.radians(point[1]), math.radians(point[0])
     return (_R * math.cos(lat) * math.cos(lon), _R * math.cos(lat) * math.sin(lon), _R * math.sin(lat))
 
@@ -146,7 +147,7 @@ def _geo(vector) -> tuple[float, float]:
 
 
 def _solve(points, dists) -> tuple[float, float]:
-    """用球面三点交会求坐标。"""
+    """在球形 ECEF 坐标系中用三点交会求经纬度。"""
     p = [_ecef(point) for point in points]
     chord = [2 * _R * math.sin(d / (2 * _R)) for d in dists]
     rows = []

@@ -156,6 +156,8 @@ def test_engine_clears_failure_after_successful_login(user, monkeypatch):
 
 @pytest.mark.parametrize(("message", "kind"), [
     ("学号或密码错误", "bad_credentials"),
+    ("学号或密码有误。请先前往学校信息门户确认能够正常登录", "bad_credentials"),
+    ("CAS 登录失败：您提供的用户名 或者密码有误", "bad_credentials"),
     ("账号已被锁定，请联系学校", "locked"),
     ("CAS 要求输入验证码，但自动识别不可用（未安装 ddddocr 或识别失败）", "other"),
     ("CAS 验证码连续 2 次未通过，请先在浏览器登录一次后再试", "other"),

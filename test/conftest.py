@@ -40,11 +40,13 @@ def _disable_login_rate_limits(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_login_state():
-    from app import checkin
+    from app import checkin, exits
 
     checkin.reset_login_state()
+    exits.reset()
     yield
     checkin.reset_login_state()
+    exits.reset()
 
 
 @pytest.fixture(autouse=True)

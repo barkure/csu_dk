@@ -169,7 +169,7 @@ def verify_code(request: Request, response: Response, payload: VerifyBody | None
         return JSONResponse({"error": result.reason}, status_code=400)
 
     response.set_cookie(auth.SESSION_COOKIE, result.token,
-                        **auth.session_cookie_options(request))
+                        **auth.session_cookie_options())
     return {"ok": True, "user": {"email": result.user["email"]}}
 
 

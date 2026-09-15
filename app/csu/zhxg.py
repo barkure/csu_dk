@@ -4,11 +4,12 @@ from __future__ import annotations
 import http.cookiejar
 import json
 import re
+from collections.abc import Callable
 from urllib.parse import quote
 
 import requests
 
-from .. import config as cfg
+from .. import exits
 from .cas import UA, cas_login
 from .des import des_encrypt, generate_casual
 
@@ -74,7 +75,8 @@ def load_cookies(session: requests.Session, raw: str | None) -> None:
 
 def new_session() -> requests.Session:
     session = requests.Session()
-    proxy = (cfg.config.outbound_proxy or "").strip()
+    proxy = exits.current()
+    session.csu_exit = proxy
     if proxy:
         session.proxies.update({"http": proxy, "https": proxy})
     return session
@@ -84,6 +86,7 @@ class ZhxgClient:
     def __init__(self, session: requests.Session | None = None, casual: str | None = None,
                  token: str | None = None, cookies: str | None = None):
         self.session = session or new_session()
+        self.exit = getattr(self.session, "csu_exit", exits.current())
         if cookies:
             load_cookies(self.session, cookies)
         self.casual = casual or generate_casual(16)
@@ -93,8 +96,14 @@ class ZhxgClient:
         """把会话 cookie 序列化落库（与密码同等待遇，加密存储）。"""
         return dump_cookies(self.session)
 
-    def login(self, username: str, password: str | None = None) -> str:
-        html = cas_login(self.session, username, password, CAS_CALLBACK)
+    def has_login_cookie(self) -> bool:
+        """是否持有可用于免密登录 CAS 的 Cookie。"""
+        return any(cookie.name.upper() == "CASTGC" for cookie in self.session.cookies)
+
+    def login(self, username: str, password: str | None = None,
+              before_password_login: Callable[[], None] | None = None) -> str:
+        html = cas_login(self.session, username, password, CAS_CALLBACK,
+                         before_password_login=before_password_login)
         return self._exchange_callback(html)
 
     def _exchange_callback(self, html: str) -> str:

@@ -22,16 +22,6 @@ def _hostname(request: Request) -> str:
     return (request.headers.get("host") or "").split(":")[0].strip("[]").lower()
 
 
-def served_over_https(request: Request) -> bool:
-    """判断请求是否使用 HTTPS。"""
-    if request.url.scheme == "https":
-        return True
-    if not cfg.config.trust_proxy:
-        return False
-    forwarded = request.headers.get("x-forwarded-proto", "")
-    return forwarded.split(",", 1)[0].strip().lower() == "https"
-
-
 def is_local_request(request: Request) -> bool:
     """判断请求是否来自本机。"""
     if request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip"):

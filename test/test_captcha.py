@@ -80,6 +80,42 @@ def test_without_captcha_nothing_changes(monkeypatch):
     assert called == []
 
 
+def test_valid_cookie_does_not_consume_password_login_limit():
+    checked = []
+    session = FakeSession(need_captcha=False, login_pages=[LANDING], posts=[],
+                          first_url="https://zhxg.csu.edu.cn/callback")
+
+    assert cas.cas_login(session, "255000001", "pw", "svc",
+                         before_password_login=lambda: checked.append(True)) == LANDING
+    assert checked == []
+
+
+def test_password_login_checks_limit_before_submitting():
+    session = FakeSession(need_captcha=False, login_pages=[PAGE], posts=[])
+
+    with pytest.raises(RuntimeError, match="limited"):
+        cas.cas_login(session, "255000001", "pw", "svc",
+                      before_password_login=lambda: (_ for _ in ()).throw(RuntimeError("limited")))
+
+    assert session.posted == []
+
+
+def test_school_bad_credentials_tip_gives_actionable_guidance(monkeypatch):
+    monkeypatch.setattr(cas.ocr, "solve", lambda *_a, **_k: "")
+    rejected = '<html><div id="showErrorTip">您提供的用户名\n或者密码有误</div></html>'
+    session = FakeSession(need_captcha=False, login_pages=[PAGE],
+                          posts=[FakeResponse(text=rejected)])
+
+    with pytest.raises(RuntimeError) as caught:
+        cas.cas_login(session, "255000001", "pw", "svc")
+
+    message = str(caught.value)
+    assert "学号或密码有误" in message
+    assert "学校信息门户" in message
+    assert "确认能够正常登录" in message
+    assert "再回到此页面添加账号" in message
+
+
 def test_solved_captcha_is_submitted(monkeypatch):
     seen = []
 

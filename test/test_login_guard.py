@@ -32,12 +32,18 @@ def audit(monkeypatch):
 class FakeLogin:
     token = None
     casual = None
+    exit = ""
 
     def __init__(self, error: Exception | None = None):
         self.error = error
         self.calls = 0
 
-    def login(self, username, password):
+    def has_login_cookie(self):
+        return False
+
+    def login(self, username, password, before_password_login=None):
+        if before_password_login:
+            before_password_login()
         self.calls += 1
         if self.error is not None:
             raise self.error
@@ -260,3 +266,46 @@ def test_global_login_burst_is_capped(real_login, audit, monkeypatch):
         checkin.cas_login(client, "255100003", "pw", entry=checkin.ENTRY_CREATE)
     assert client.calls == 2
     assert audit[-1]["result"] == "login_rate_limited"
+
+
+def test_frozen_exit_switches_to_fallback(monkeypatch):
+    """首选出口被冻结后切换到备选出口，冷却结束后恢复首选出口。"""
+    import time
+
+    from app import exits
+
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
+        update={"outbound_proxy": "http://127.0.0.1:1091"}))
+    exits.reset()
+    assert exits.current() == "http://127.0.0.1:1091"
+
+    assert exits.mark_frozen("http://127.0.0.1:1091", "学校冻结") == ""
+    assert exits.current() == ""
+    assert exits.available() is True
+
+    exits._frozen_until["http://127.0.0.1:1091"] = time.time() - 1      # 冷却过期
+    assert exits.current() == "http://127.0.0.1:1091"
+
+
+def test_both_exits_frozen_then_pauses(real_login, audit, monkeypatch):
+    """所有出口都被冻结后暂停密码登录。"""
+    from app import exits
+
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
+        update={"outbound_proxy": "http://127.0.0.1:1091"}))
+    exits.reset()
+    frozen = CasIpFrozenError("您的IP已被冻结")
+    primary = FakeLogin(frozen)
+    primary.exit = "http://127.0.0.1:1091"
+
+    with pytest.raises(CasIpFrozenError):
+        checkin.cas_login(primary, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN)
+    assert audit[-1]["result"] == "ip_frozen"
+    assert checkin.login_pause_remaining() == 0  # 还有备选出口，不暂停
+    assert exits.current() == ""
+
+    fallback = FakeLogin(frozen)
+    fallback.exit = ""
+    with pytest.raises(CasIpFrozenError):
+        checkin.cas_login(fallback, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN)
+    assert checkin.login_pause_remaining() > 0  # 所有出口都在冷却，暂停密码登录

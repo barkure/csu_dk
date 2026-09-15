@@ -100,14 +100,16 @@ def test_logout_clears_session(client):
     assert client.get("/dashboard", follow_redirects=False).status_code == 303
 
 
-def test_session_cookie_secure_follows_the_request_scheme(client):
-    def set_cookie(base_url: str, email: str) -> str:
-        fresh = TestClient(app, base_url=base_url)
-        code = dev_code_from(fresh.post("/ui/code", data={"email": email}).text)
-        return fresh.post("/ui/login", data={"email": email, "code": code}).headers["set-cookie"]
+def test_session_cookie_secure_follows_config(client, monkeypatch):
+    def set_cookie(email: str) -> str:
+        code = dev_code_from(client.post("/ui/code", data={"email": email}).text)
+        return client.post("/ui/login", data={"email": email, "code": code}).headers["set-cookie"]
 
-    assert "Secure" not in set_cookie("http://example.com", "ui-http@example.com")
-    assert "Secure" in set_cookie("https://example.com", "ui-tls@example.com")
+    monkeypatch.setattr(cfg.config, "cookie_secure", False)
+    assert "Secure" not in set_cookie("ui-plain@example.com")
+
+    monkeypatch.setattr(cfg.config, "cookie_secure", True)
+    assert "Secure" in set_cookie("ui-secure@example.com")
 
 
 def test_htmx_error_body_is_not_swapped(client):

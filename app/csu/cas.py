@@ -5,6 +5,7 @@ import base64
 import re
 import secrets
 import time
+from collections.abc import Callable
 from urllib.parse import urljoin
 
 import requests
@@ -80,7 +81,7 @@ def detect_ip_frozen(html: str) -> CasIpFrozenError | None:
 
 
 _CAS_ERRORS = {
-    "badCredentials": ("密码错误", "用户名或密码错"),
+    "badCredentials": ("密码错误", "密码有误", "用户名或密码错"),
     "inactive": ("未激活",),
     "locked": ("锁定",),
     "captcha": ("验证码",),
@@ -100,7 +101,8 @@ def _is_cas_host(url: str) -> bool:
 
 
 def cas_login(session: requests.Session, username: str, password: str | None,
-              service: str, timeout: int = 20) -> str:
+              service: str, timeout: int = 20,
+              before_password_login: Callable[[], None] | None = None) -> str:
     """登录 CAS 并返回落地页。"""
     login_url = f"{CAS_BASE}/login?service={requests.utils.quote(service, safe='')}"
 
@@ -117,6 +119,9 @@ def cas_login(session: requests.Session, username: str, password: str | None,
 
     if password is None:
         raise SecretDecryptError("CAS 会话已失效，而本地保存的密码又无法解密，请在「编辑账号」里重新提交一次密码")
+
+    if before_password_login:
+        before_password_login()
 
     if _needs_captcha(session, username, timeout):
         return _login_with_captcha(session, login_url, username, password, timeout)
@@ -249,7 +254,10 @@ def _submit_login(session: requests.Session, login_url: str, page_html: str, use
         if kind == "captcha":
             raise _CaptchaRejected(tip)
         if kind == "badCredentials":
-            raise RuntimeError("学号或密码错误")
+            raise RuntimeError(
+                "学号或密码有误。请先前往学校信息门户确认能够正常登录，"
+                "再回到此页面添加账号"
+            )
         if kind == "inactive":
             raise RuntimeError("账号未激活，请先在统一身份认证平台激活")
         if kind == "locked":

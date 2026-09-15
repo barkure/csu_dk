@@ -37,10 +37,13 @@ def run_concurrently(count: int, fn):
     return results
 
 
-def test_captcha_is_consumed_atomically():
+def test_captcha_is_consumed_atomically(monkeypatch):
+    from app.ratelimit import SlidingWindow
+
     email = "atomic@example.com"
     inject_code(email, "424242")
-    auth.limiters["verify_ip"].reset()
+    # 本用例只验证并发消费的原子性，因此放宽与测试无关的校验频率限制
+    monkeypatch.setitem(auth.limiters, "verify_ip", SlidingWindow(86_400_000, 100))
 
     results = run_concurrently(8, lambda _i: auth.verify_login_code(email, "424242", "127.0.0.1", "concurrent"))
     winners = [result for result in results if result.ok]

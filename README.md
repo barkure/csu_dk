@@ -12,7 +12,7 @@ cp .env.example .env
 uv run python -m app
 ```
 
-默认监听 <http://127.0.0.1:8443>，配置见 [`.env.example`](.env.example)。
+配置见 [`.env.example`](.env.example)。
 
 ## 项目结构
 
@@ -44,7 +44,6 @@ uv run ruff check .
 
 - CAS 登录流程参考自 [@Dislink](https://github.com/Dislink)
 - 管理界面使用 [htmx 4.0.0](https://htmx.org/)（MIT License）
-- 其他依赖见 `pyproject.toml`
 
 ## 许可证
 

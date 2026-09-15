@@ -113,7 +113,7 @@ def ui_login(request: Request, email: str = Form(""), code: str = Form("")):
 
     response = Response(status_code=204, headers={"HX-Redirect": "/dashboard"})
     response.set_cookie(auth.SESSION_COOKIE, result.token,
-                        **auth.session_cookie_options(request))
+                        **auth.session_cookie_options())
     return response
 
 

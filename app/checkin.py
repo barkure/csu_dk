@@ -6,7 +6,7 @@ import threading
 import time
 from datetime import timedelta
 
-from . import buildings, db
+from . import buildings, db, exits
 from . import config as cfg
 from .clock import local_now, parse_local, to_local_iso
 from .crypto import decrypt_secret
@@ -152,39 +152,50 @@ def cas_login(client: ZhxgClient, username: str, password: str | None, *,
               entry: str, user_id: int | None = None, account_id: int | None = None,
               ip: str | None = None) -> str:
     """统一处理登录暂停、凭据冷却和审计。"""
-    remaining = login_pause_remaining()
-    if remaining > 0:
-        _audit_login(entry, "global_paused", username=username, user_id=user_id,
-                     account_id=account_id, ip=ip)
-        assert_login_allowed()
+    password_login_checked = False
 
-    blocked = _guard_blocked(username, user_id, ip)
-    if blocked > 0:
-        _audit_login(entry, "cred_cooldown", username=username, user_id=user_id,
-                     account_id=account_id, ip=ip)
-        raise RateLimitError(f"密码连续输错，请 {blocked} 秒后再试", blocked)
+    def before_password_login() -> None:
+        nonlocal password_login_checked
+        if password_login_checked:
+            return
+        remaining = login_pause_remaining()
+        if remaining > 0:
+            _audit_login(entry, "global_paused", username=username, user_id=user_id,
+                         account_id=account_id, ip=ip)
+            assert_login_allowed()
 
-    if _global_attempts is not None:
-        burst = _global_attempts.take("cas")
-        if not burst.ok:
-            _audit_login(entry, "login_rate_limited", username=username, user_id=user_id,
+        blocked = _guard_blocked(username, user_id, ip)
+        if blocked > 0:
+            _audit_login(entry, "cred_cooldown", username=username, user_id=user_id,
                          account_id=account_id, ip=ip)
-            raise RateLimitError(f"登录请求太密集，请 {burst.retry_after_sec} 秒后再试",
-                                 burst.retry_after_sec)
-    if _attempt_gap is not None and entry in USER_ENTRIES:
-        gap = _attempt_gap.take(username)
-        if not gap.ok:
-            _audit_login(entry, "login_too_soon", username=username, user_id=user_id,
-                         account_id=account_id, ip=ip)
-            raise RateLimitError(f"刚提交过，请 {gap.retry_after_sec} 秒后再试",
-                                 gap.retry_after_sec)
+            raise RateLimitError(f"密码连续输错，请 {blocked} 秒后再试", blocked)
+
+        if _global_attempts is not None:
+            burst = _global_attempts.take("cas")
+            if not burst.ok:
+                _audit_login(entry, "login_rate_limited", username=username, user_id=user_id,
+                             account_id=account_id, ip=ip)
+                raise RateLimitError(f"登录请求太密集，请 {burst.retry_after_sec} 秒后再试",
+                                     burst.retry_after_sec)
+        if _attempt_gap is not None and entry in USER_ENTRIES:
+            gap = _attempt_gap.take(username)
+            if not gap.ok:
+                _audit_login(entry, "login_too_soon", username=username, user_id=user_id,
+                             account_id=account_id, ip=ip)
+                raise RateLimitError(f"刚提交过，请 {gap.retry_after_sec} 秒后再试",
+                                     gap.retry_after_sec)
+        password_login_checked = True
 
     with _cas_gate:
-        assert_login_allowed()
         try:
-            html = client.login(username, password)
+            if not client.has_login_cookie():
+                before_password_login()
+            html = client.login(username, password, before_password_login=before_password_login)
+        except (LoginPausedError, RateLimitError):
+            raise
         except CasIpFrozenError as error:
-            pause_logins(str(error))
+            if exits.mark_frozen(client.exit, str(error)) is None:
+                pause_logins(str(error))  # 所有出口都在冷却时暂停密码登录
             _audit_login(entry, "ip_frozen", username=username, user_id=user_id,
                          account_id=account_id, ip=ip)
             raise
@@ -194,7 +205,8 @@ def cas_login(client: ZhxgClient, username: str, password: str | None, *,
                 _audit_login(entry, "bad_credentials", username=username, user_id=user_id,
                              account_id=account_id, ip=ip, fail_count=count)
             else:
-                _audit_login(entry, "upstream_error", username=username, user_id=user_id,
+                result = classify_cas_error(str(error)) or "upstream_error"
+                _audit_login(entry, result, username=username, user_id=user_id,
                              account_id=account_id, ip=ip)
             raise
         _guard_clear(username, user_id, ip)

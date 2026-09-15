@@ -44,7 +44,6 @@ class Settings(BaseSettings):
     session_days: int = Field(default=14, ge=1, le=3650)
     code_minutes: int = Field(default=10, ge=1, le=1440)
     code_cooldown_seconds: int = Field(default=60, ge=1, le=86_400, validation_alias="CSU_DK_CODE_COOLDOWN")
-    email_daily_max: int = Field(default=10, ge=1, le=1000)
     allowed_emails: Annotated[tuple[str, ...], NoDecode] = ()
     max_accounts_per_user: int = Field(default=5, ge=1, le=100, validation_alias="CSU_DK_MAX_ACCOUNTS")
     max_sessions_per_user: int = Field(default=5, ge=1, le=100, validation_alias="CSU_DK_MAX_SESSIONS")
@@ -57,11 +56,11 @@ class Settings(BaseSettings):
     cas_attempt_gap_seconds: int = Field(default=15, ge=0, le=3600,
                                          validation_alias="CSU_DK_CAS_ATTEMPT_GAP")
 
-    scheduler_interval: int = Field(default=20, ge=1, le=3600, validation_alias="CSU_DK_SCHED_INTERVAL")
+    scheduler_interval: int = Field(default=10, ge=1, le=3600, validation_alias="CSU_DK_SCHED_INTERVAL")
     checkin_per_tick: int = Field(default=2, ge=1, le=100)
-    refresh_interval: int = Field(default=60, ge=1, le=86_400, validation_alias="CSU_DK_REFRESH_INTERVAL")
+    refresh_interval: int = Field(default=5, ge=1, le=86_400, validation_alias="CSU_DK_REFRESH_INTERVAL")
     maintenance_interval: int = Field(default=600, ge=1, le=86_400)
-    ip_freeze_cooldown_seconds: int = Field(default=3600, ge=1, le=604_800,
+    ip_freeze_cooldown_seconds: int = Field(default=300, ge=1, le=604_800,
                                             validation_alias="CSU_DK_IP_FREEZE_COOLDOWN")
     cred_fail_max: int = Field(default=3, ge=1, le=100, validation_alias="CSU_DK_CRED_FAIL_MAX")
     cred_fail_max_user: int = Field(default=6, ge=1, le=1000,
@@ -77,10 +76,10 @@ class Settings(BaseSettings):
     outbound_proxy: str = Field(default="", validation_alias="CSU_DK_PROXY")
     cookie_secure: bool = False
 
-    rl_ip_window: int = Field(default=86_400, ge=1)
-    rl_ip_max: int = Field(default=20, ge=1)
-    rl_verify_window: int = Field(default=1800, ge=1)
-    rl_verify_max: int = Field(default=15, ge=1)
+    # 同一 IP 和同一邮箱分别统计每日验证码请求次数，采用相同上限
+    login_code_daily_max: int = Field(default=10, ge=1, le=1000)
+    # 同一 IP 每 30 分钟内的验证码校验上限
+    login_code_verify_max: int = Field(default=5, ge=1, le=1000)
 
     tencent_ses_secret_id: str = Field(default="", validation_alias="TENCENT_SES_SECRET_ID")
     tencent_ses_secret_key: str = Field(default="", validation_alias="TENCENT_SES_SECRET_KEY")
@@ -130,18 +129,15 @@ class Settings(BaseSettings):
     def _consistency(self) -> Settings:
         if not self.host.strip():
             raise ValueError("CSU_DK_HOST 不能为空")
-        for name in ("rl_ip_window", "rl_verify_window"):
-            if getattr(self, name) < 1:
-                raise ValueError(f"{name} 至少 1 秒")
         return self
 
     @property
     def request_ip(self) -> Limit:
-        return Limit(self.rl_ip_window * 1000, self.rl_ip_max)
+        return Limit(86_400_000, self.login_code_daily_max)
 
     @property
     def verify_ip(self) -> Limit:
-        return Limit(self.rl_verify_window * 1000, self.rl_verify_max)
+        return Limit(1_800_000, self.login_code_verify_max)
 
 
 try:

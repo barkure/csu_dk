@@ -26,6 +26,7 @@ SPECIAL = {
     "CSU_DK_HOST": "0.0.0.0",
     "CSU_DK_CHECKIN_WINDOW_START": "19:30",
     "CSU_DK_CHECKIN_WINDOW_END": "23:00",
+    "CSU_DK_COOKIE_SECURE": "true",            # 示例建议值与代码默认值不同
     "MAIL_FROM": "Changed <changed@example.com>",
     "TENCENT_SES_TEMPLATE_ID": "123456",
 }
@@ -34,6 +35,8 @@ SPECIAL = {
 def mutated(name: str, value: str) -> str:
     if name in SPECIAL:
         return SPECIAL[name]
+    if value.lower() in {"true", "false"}:
+        return "false" if value.lower() == "true" else "true"
     if value.isdigit():
         return str(int(value) + 1)
     return f"{value}x"
@@ -56,9 +59,11 @@ def test_data_dir_defaults_into_project(monkeypatch):
 def test_blank_template_id_is_treated_as_unset(monkeypatch):
     monkeypatch.setenv("TENCENT_SES_TEMPLATE_ID", "")
     assert Settings().tencent_ses_template_id == 0
+
+
 SUGGESTIONS = {
     "MAIL_FROM", "TENCENT_SES_SECRET_ID", "TENCENT_SES_SECRET_KEY", "TENCENT_SES_TEMPLATE_ID",
-    "CSU_DK_ALLOWED_EMAILS",
+    "CSU_DK_ALLOWED_EMAILS", "CSU_DK_COOKIE_SECURE",
 }
 
 
@@ -75,6 +80,7 @@ def test_documented_values_match_code_defaults():
         field_name = aliases.get(var)
         assert field_name, f"{var} 写在 .env.example 里，配置类却没有对应字段"
         default = getattr(Settings(), field_name)
-        if str(default) != value:
+        documented_default = str(default).lower() if isinstance(default, bool) else str(default)
+        if documented_default != value:
             mismatches.append(f"{var}: 示例 {value!r} ≠ 代码默认 {default!r}")
     assert not mismatches, "示例与代码默认值不一致：\n  " + "\n  ".join(mismatches)

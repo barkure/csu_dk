@@ -9,10 +9,8 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from fastapi import Request
-
 from . import config as cfg
-from . import db, netinfo
+from . import db
 from .clock import local_now, to_local_iso
 from .errors import BadRequestError, ForbiddenError, RateLimitError
 from .mailer import send_login_code
@@ -86,8 +84,8 @@ def request_login_code(email: object, ip: str = "unknown") -> dict:
             raise RateLimitError(f"请求过于频繁，请 {wait} 秒后再试", wait)
 
     day_ago = to_local_iso(now - timedelta(days=1))
-    if db.count_recent_codes(normalized, day_ago) >= cfg.config.email_daily_max:
-        raise RateLimitError(f"该邮箱 24 小时内最多请求 {cfg.config.email_daily_max} 次验证码，请稍后再试", 3600)
+    if db.count_recent_codes(normalized, day_ago) >= cfg.config.login_code_daily_max:
+        raise RateLimitError(f"该邮箱 24 小时内最多请求 {cfg.config.login_code_daily_max} 次验证码，请稍后再试", 3600)
 
     code = f"{secrets.randbelow(1_000_000):06d}"
     code_id = db.insert_login_code(
@@ -179,12 +177,12 @@ def destroy_session(token: str | None) -> None:
         db.delete_session(_sha256(token))
 
 
-def session_cookie_options(request: Request) -> dict:
-    """Secure 默认关：明文 HTTP 下标了它浏览器不回传 Cookie，登录会直接失效。"""
+def session_cookie_options() -> dict:
+    """Cookie 是否仅通过 HTTPS 发送由部署配置决定。"""
     return {
         "httponly": True,
         "samesite": "lax",
         "path": "/",
-        "secure": cfg.config.cookie_secure or netinfo.served_over_https(request),
+        "secure": cfg.config.cookie_secure,
         "max_age": cfg.config.session_days * 86_400,
     }
