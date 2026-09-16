@@ -1,18 +1,20 @@
-"""学校流量出口：首选校园网代理，被冻时临时切到服务器直连。"""
+"""学校流量出口：在校园网代理与服务器直连之间轮询，自动跳过冷却出口。"""
 from __future__ import annotations
 
 import time
+from threading import Lock
 
 from . import config as cfg
 from .log import log_event
 
 _frozen_until: dict[str, float] = {}
+_next_index = 0
+_lock = Lock()
 
 
 def _exits() -> list[str]:
-    """按优先级返回出口：校园网代理在前，服务器直连（空串）兜底。"""
-    proxy = (cfg.config.outbound_proxy or "").strip()
-    return [proxy, ""] if proxy else [""]
+    """返回参与轮询的代理出口与服务器直连（空串）。"""
+    return [*cfg.config.outbound_proxies, ""]
 
 
 def label(exit_: str) -> str:
@@ -20,12 +22,19 @@ def label(exit_: str) -> str:
 
 
 def current() -> str:
-    """当前该用的出口：优先首选，冷却中的跳过；全在冷却则返回首选。"""
+    """轮询选择健康出口；全在冷却时返回配置中的第一个出口。"""
+    global _next_index
+
+    candidates = _exits()
     now = time.time()
-    for candidate in _exits():
-        if _frozen_until.get(candidate, 0.0) <= now:
-            return candidate
-    return _exits()[0]
+    with _lock:
+        for offset in range(len(candidates)):
+            index = (_next_index + offset) % len(candidates)
+            candidate = candidates[index]
+            if _frozen_until.get(candidate, 0.0) <= now:
+                _next_index = (index + 1) % len(candidates)
+                return candidate
+    return candidates[0]
 
 
 def available() -> bool:
@@ -46,7 +55,11 @@ def mark_frozen(frozen: str, reason: str = "") -> str | None:
 
 
 def reset() -> None:
-    _frozen_until.clear()
+    global _next_index
+
+    with _lock:
+        _frozen_until.clear()
+        _next_index = 0
 
 
 def snapshot() -> dict[str, int]:

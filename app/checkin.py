@@ -153,6 +153,7 @@ def cas_login(client: ZhxgClient, username: str, password: str | None, *,
               ip: str | None = None) -> str:
     """统一处理登录暂停、凭据冷却和审计。"""
     password_login_checked = False
+    failover_retry = False
 
     def before_password_login() -> None:
         nonlocal password_login_checked
@@ -177,7 +178,7 @@ def cas_login(client: ZhxgClient, username: str, password: str | None, *,
                              account_id=account_id, ip=ip)
                 raise RateLimitError(f"登录请求太密集，请 {burst.retry_after_sec} 秒后再试",
                                      burst.retry_after_sec)
-        if _attempt_gap is not None and entry in USER_ENTRIES:
+        if _attempt_gap is not None and entry in USER_ENTRIES and not failover_retry:
             gap = _attempt_gap.take(username)
             if not gap.ok:
                 _audit_login(entry, "login_too_soon", username=username, user_id=user_id,
@@ -187,32 +188,39 @@ def cas_login(client: ZhxgClient, username: str, password: str | None, *,
         password_login_checked = True
 
     with _cas_gate:
-        try:
-            if not client.has_login_cookie():
-                before_password_login()
-            html = client.login(username, password, before_password_login=before_password_login)
-        except (LoginPausedError, RateLimitError):
-            raise
-        except CasIpFrozenError as error:
-            if exits.mark_frozen(client.exit, str(error)) is None:
-                pause_logins(str(error))  # 所有出口都在冷却时暂停密码登录
-            _audit_login(entry, "ip_frozen", username=username, user_id=user_id,
-                         account_id=account_id, ip=ip)
-            raise
-        except Exception as error:
-            if _is_credential_rejection(str(error)):
-                count = _guard_record_failure(username, user_id, ip)
-                _audit_login(entry, "bad_credentials", username=username, user_id=user_id,
-                             account_id=account_id, ip=ip, fail_count=count)
-            else:
-                result = classify_cas_error(str(error)) or "upstream_error"
-                _audit_login(entry, result, username=username, user_id=user_id,
+        while True:
+            password_login_checked = False
+            try:
+                if not client.has_login_cookie():
+                    before_password_login()
+                html = client.login(username, password, before_password_login=before_password_login)
+            except (LoginPausedError, RateLimitError):
+                raise
+            except CasIpFrozenError as error:
+                switched = exits.mark_frozen(client.exit, str(error))
+                if switched is None:
+                    pause_logins(str(error))
+                _audit_login(entry, "ip_frozen", username=username, user_id=user_id,
                              account_id=account_id, ip=ip)
-            raise
-        _guard_clear(username, user_id, ip)
-        _audit_login(entry, "ok", username=username, user_id=user_id,
-                     account_id=account_id, ip=ip)
-        return html
+                if switched is None or failover_retry:
+                    raise
+                client.switch_exit(switched)
+                failover_retry = True
+                continue
+            except Exception as error:
+                if _is_credential_rejection(str(error)):
+                    count = _guard_record_failure(username, user_id, ip)
+                    _audit_login(entry, "bad_credentials", username=username, user_id=user_id,
+                                 account_id=account_id, ip=ip, fail_count=count)
+                else:
+                    result = classify_cas_error(str(error)) or "upstream_error"
+                    _audit_login(entry, result, username=username, user_id=user_id,
+                                 account_id=account_id, ip=ip)
+                raise
+            _guard_clear(username, user_id, ip)
+            _audit_login(entry, "ok", username=username, user_id=user_id,
+                         account_id=account_id, ip=ip)
+            return html
 
 
 def verify_login(username: str, password: str, *, entry: str = ENTRY_CREATE,

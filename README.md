@@ -2,7 +2,7 @@
 
 一个妙妙道具。用户通过邮箱验证码登录，添加并验证学号后，系统自动完成每日打卡。
 
-基于 Python 3.12+、FastAPI、SQLite、Jinja2 和 htmx。
+基于 Python 3.14+、FastAPI、SQLite、Jinja2 和 htmx。
 
 ## 启动
 

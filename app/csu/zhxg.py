@@ -73,9 +73,10 @@ def load_cookies(session: requests.Session, raw: str | None) -> None:
         ))
 
 
-def new_session() -> requests.Session:
+def new_session(proxy: str | None = None) -> requests.Session:
     session = requests.Session()
-    proxy = exits.current()
+    if proxy is None:
+        proxy = exits.current()
     session.csu_exit = proxy
     if proxy:
         session.proxies.update({"http": proxy, "https": proxy})
@@ -86,7 +87,7 @@ class ZhxgClient:
     def __init__(self, session: requests.Session | None = None, casual: str | None = None,
                  token: str | None = None, cookies: str | None = None):
         self.session = session or new_session()
-        self.exit = getattr(self.session, "csu_exit", exits.current())
+        self.exit = self.session.csu_exit if hasattr(self.session, "csu_exit") else exits.current()
         if cookies:
             load_cookies(self.session, cookies)
         self.casual = casual or generate_casual(16)
@@ -99,6 +100,13 @@ class ZhxgClient:
     def has_login_cookie(self) -> bool:
         """是否持有可用于免密登录 CAS 的 Cookie。"""
         return any(cookie.name.upper() == "CASTGC" for cookie in self.session.cookies)
+
+    def switch_exit(self, proxy: str | None = None) -> None:
+        """保留 Cookie，并用当前可用出口重建网络会话。"""
+        cookies = self.cookies_json()
+        self.session = new_session(proxy)
+        load_cookies(self.session, cookies)
+        self.exit = self.session.csu_exit
 
     def login(self, username: str, password: str | None = None,
               before_password_login: Callable[[], None] | None = None) -> str:

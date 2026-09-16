@@ -102,6 +102,7 @@ def test_batch_retries_after_pause_ends(user, monkeypatch):
 
     assert len(scheduler.run_batch(accounts=[account])) == 1
 
+
 def test_inside_window():
     from app.scheduler import _inside_window
 
@@ -196,6 +197,7 @@ def test_refresh_login_updates_token_without_checkin_record(user, monkeypatch):
     class Client:
         token = "new"
         casual = "cas"
+
         def cookies_json(self):
             return "[]"
 
@@ -337,7 +339,7 @@ def test_engine_determines_location_when_unknown(user, monkeypatch):
     saved = db.get_account_by_id(account["id"])
     assert saved["dkdz"] == "升华24栋"
     assert saved["jd"] is None and saved["wd"] is None
-    assert client.submitted["jd"] == 112.936237
+    assert client.submitted["jd"] == pytest.approx(112.936237)
 
 
 def test_engine_relocates_when_position_rejected(user, monkeypatch):
@@ -356,7 +358,7 @@ def test_engine_relocates_when_position_rejected(user, monkeypatch):
     saved = db.get_account_by_id(account["id"])
     assert saved["dkdz"] == "升华24栋"
     assert saved["jd"] is None
-    assert client.submitted["jd"] == 112.935978, "提交要用重测后的坐标"
+    assert client.submitted["jd"] == pytest.approx(112.935978), "提交要用重测后的坐标"
 
 
 def test_engine_stores_private_coords_for_rental(user, monkeypatch):
@@ -391,7 +393,7 @@ def test_engine_reuses_account_coords_for_rental(user, monkeypatch):
                         lambda *_a, **_k: pytest.fail("租房已有坐标不该重测"))
     result = engine_status(account)
     assert result["status"] == "success"
-    assert client.submitted["jd"] == 112.927056
+    assert client.submitted["jd"] == pytest.approx(112.927056)
 
 
 def test_engine_uses_cached_building_coords(user, monkeypatch):

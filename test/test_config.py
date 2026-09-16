@@ -67,6 +67,31 @@ SUGGESTIONS = {
 }
 
 
+def test_outbound_proxies_are_split_and_deduplicated(monkeypatch):
+    monkeypatch.setenv(
+        "CSU_DK_PROXIES",
+        "http://127.0.0.1:1091, http://127.0.0.1:1092,http://127.0.0.1:1091",
+    )
+    assert Settings().outbound_proxies == (
+        "http://127.0.0.1:1091",
+        "http://127.0.0.1:1092",
+    )
+
+
+@pytest.mark.parametrize("value", [
+    "127.0.0.1:1091",
+    "ftp://127.0.0.1:1091",
+    "socks5://127.0.0.1:1091",      # 没装 PySocks，装了也用不了，直接拒绝
+    "socks5h://127.0.0.1:1091",
+    "http://127.0.0.1",
+    "http://127.0.0.1:not-a-port",
+])
+def test_outbound_proxies_reject_invalid_urls(monkeypatch, value):
+    monkeypatch.setenv("CSU_DK_PROXIES", value)
+    with pytest.raises(ValueError, match="CSU_DK_PROXIES 里有非法代理地址"):
+        Settings()
+
+
 def test_documented_values_match_code_defaults():
     aliases = {}
     for field_name, field in Settings.model_fields.items():

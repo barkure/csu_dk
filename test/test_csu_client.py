@@ -30,3 +30,19 @@ def test_invalid_cookie_data_is_ignored():
     assert session.cookies.get("CASTGC") is None
     load_cookies(session, "not json")
     assert session.cookies.get("CASTGC") is None
+
+
+def test_switch_exit_preserves_cookies_and_rebuilds_proxies(monkeypatch):
+    client = ZhxgClient()
+    original = client.session
+    client.session.cookies.set("CASTGC", "TGT-1234", domain="ca.csu.edu.cn", path="/authserver")
+    monkeypatch.setattr("app.exits.current", lambda: "http://fallback:1091")
+
+    client.switch_exit("http://fallback:1091")
+
+    assert client.session is not original
+    assert client.exit == "http://fallback:1091"
+    assert client.session.proxies == {
+        "http": "http://fallback:1091", "https": "http://fallback:1091",
+    }
+    assert client.session.cookies.get("CASTGC", domain="ca.csu.edu.cn") == "TGT-1234"

@@ -7,6 +7,7 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from email_validator import EmailNotValidError, validate_email
@@ -73,7 +74,8 @@ class Settings(BaseSettings):
     checkin_window_end: str = "23:30"
 
     trust_proxy: bool = False
-    outbound_proxy: str = Field(default="", validation_alias="CSU_DK_PROXY")
+    outbound_proxies: Annotated[tuple[str, ...], NoDecode] = Field(
+        default=(), validation_alias="CSU_DK_PROXIES")
     cookie_secure: bool = False
 
     # 同一 IP 和同一邮箱分别统计每日验证码请求次数，采用相同上限
@@ -86,7 +88,6 @@ class Settings(BaseSettings):
     tencent_ses_region: str = Field(default="ap-hongkong", validation_alias="TENCENT_SES_REGION")
     tencent_ses_template_id: int = Field(default=0, ge=0, validation_alias="TENCENT_SES_TEMPLATE_ID")
     mail_from: str = Field(default="", validation_alias="MAIL_FROM")
-
 
     @field_validator("tencent_ses_template_id", mode="before")
     @classmethod
@@ -109,6 +110,26 @@ class Settings(BaseSettings):
             except EmailNotValidError as error:
                 raise ValueError(f"CSU_DK_ALLOWED_EMAILS 里有非法邮箱：{item}（{error}）") from error
         return tuple(cleaned)
+
+    @field_validator("outbound_proxies", mode="before")
+    @classmethod
+    def _split_proxies(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, (tuple, list)):
+            items = [str(item).strip() for item in value]
+        else:
+            items = [item.strip() for item in str(value or "").split(",")]
+        proxies = tuple(dict.fromkeys(item for item in items if item))
+        for proxy in proxies:
+            try:
+                parsed = urlsplit(proxy)
+                port = parsed.port
+            except ValueError as error:
+                raise ValueError(f"CSU_DK_PROXIES 里有非法代理地址：{proxy}") from error
+            if parsed.scheme != "http" or not parsed.hostname or port is None:
+                raise ValueError(
+                    f"CSU_DK_PROXIES 里有非法代理地址：{proxy}；"
+                    "仅支持带端口的 http:// 代理（socks5 需要额外的 PySocks 依赖，本项目不带）")
+        return proxies
 
     @field_validator("tz")
     @classmethod

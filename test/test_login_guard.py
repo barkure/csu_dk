@@ -34,8 +34,9 @@ class FakeLogin:
     casual = None
     exit = ""
 
-    def __init__(self, error: Exception | None = None):
+    def __init__(self, error: Exception | list[Exception | None] | None = None):
         self.error = error
+        self.errors = list(error) if isinstance(error, list) else None
         self.calls = 0
 
     def has_login_cookie(self):
@@ -45,9 +46,15 @@ class FakeLogin:
         if before_password_login:
             before_password_login()
         self.calls += 1
-        if self.error is not None:
-            raise self.error
+        error = self.errors.pop(0) if self.errors is not None else self.error
+        if error is not None:
+            raise error
         return "html"
+
+    def switch_exit(self, proxy=None):
+        from app import exits
+
+        self.exit = exits.current() if proxy is None else proxy
 
     def cookies_json(self):
         return "[]"
@@ -268,23 +275,57 @@ def test_global_login_burst_is_capped(real_login, audit, monkeypatch):
     assert audit[-1]["result"] == "login_rate_limited"
 
 
-def test_frozen_exit_switches_to_fallback(monkeypatch):
-    """首选出口被冻结后切换到备选出口，冷却结束后恢复首选出口。"""
+def test_frozen_exit_switches_to_next_proxy(monkeypatch):
+    """首选出口被冻结后切换到下一个代理，冷却结束后恢复首选出口。"""
     import time
 
     from app import exits
 
     monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
-        update={"outbound_proxy": "http://127.0.0.1:1091"}))
+        update={"outbound_proxies": (
+            "http://127.0.0.1:1091", "http://127.0.0.1:1092")}))
     exits.reset()
     assert exits.current() == "http://127.0.0.1:1091"
 
-    assert exits.mark_frozen("http://127.0.0.1:1091", "学校冻结") == ""
-    assert exits.current() == ""
+    assert exits.mark_frozen("http://127.0.0.1:1091", "学校冻结") == \
+        "http://127.0.0.1:1092"
     assert exits.available() is True
 
     exits._frozen_until["http://127.0.0.1:1091"] = time.time() - 1      # 冷却过期
-    assert exits.current() == "http://127.0.0.1:1091"
+    assert [exits.current(), exits.current(), exits.current()] == [
+        "", "http://127.0.0.1:1091", "http://127.0.0.1:1092",
+    ]
+
+
+def test_healthy_exits_are_round_robin(monkeypatch):
+    from app import exits
+
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
+        update={"outbound_proxies": (
+            "http://127.0.0.1:1091", "http://127.0.0.1:1092")}))
+    exits.reset()
+    assert [exits.current() for _ in range(6)] == [
+        "http://127.0.0.1:1091", "http://127.0.0.1:1092", "",
+        "http://127.0.0.1:1091", "http://127.0.0.1:1092", "",
+    ]
+
+
+def test_frozen_exit_retries_on_fallback(real_login, audit, monkeypatch):
+    from app import exits
+
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
+        update={"outbound_proxies": (
+            "http://127.0.0.1:1091", "http://127.0.0.1:1092")}))
+    exits.reset()
+    frozen = CasIpFrozenError("您的IP已被冻结")
+    primary = FakeLogin([frozen, None])
+    primary.exit = "http://127.0.0.1:1091"
+
+    assert checkin.cas_login(primary, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN) == "html"
+    assert primary.calls == 2
+    assert primary.exit == "http://127.0.0.1:1092"
+    assert [event["result"] for event in audit] == ["ip_frozen", "ok"]
+    assert checkin.login_pause_remaining() == 0  # 还有备选出口，不暂停
 
 
 def test_both_exits_frozen_then_pauses(real_login, audit, monkeypatch):
@@ -292,20 +333,28 @@ def test_both_exits_frozen_then_pauses(real_login, audit, monkeypatch):
     from app import exits
 
     monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
-        update={"outbound_proxy": "http://127.0.0.1:1091"}))
+        update={"outbound_proxies": ("http://127.0.0.1:1091",)}))
     exits.reset()
     frozen = CasIpFrozenError("您的IP已被冻结")
-    primary = FakeLogin(frozen)
-    primary.exit = "http://127.0.0.1:1091"
+    client = FakeLogin([frozen, frozen])
+    client.exit = "http://127.0.0.1:1091"
 
     with pytest.raises(CasIpFrozenError):
-        checkin.cas_login(primary, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN)
-    assert audit[-1]["result"] == "ip_frozen"
-    assert checkin.login_pause_remaining() == 0  # 还有备选出口，不暂停
-    assert exits.current() == ""
-
-    fallback = FakeLogin(frozen)
-    fallback.exit = ""
-    with pytest.raises(CasIpFrozenError):
-        checkin.cas_login(fallback, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN)
+        checkin.cas_login(client, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN)
+    assert client.calls == 2
+    assert [event["result"] for event in audit] == ["ip_frozen", "ip_frozen"]
     assert checkin.login_pause_remaining() > 0  # 所有出口都在冷却，暂停密码登录
+    assert audit[-1]["paused_until"]
+
+
+def test_failover_retries_only_once(real_login, audit, monkeypatch):
+    """即使出口管理器持续返回可用出口，也最多自动重试一次。"""
+    frozen = CasIpFrozenError("您的IP已被冻结")
+    client = FakeLogin([frozen, frozen, None])
+    monkeypatch.setattr("app.exits.mark_frozen", lambda *_args: "http://another-exit:1091")
+
+    with pytest.raises(CasIpFrozenError):
+        checkin.cas_login(client, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN)
+
+    assert client.calls == 2
+    assert [event["result"] for event in audit] == ["ip_frozen", "ip_frozen"]
