@@ -80,7 +80,7 @@ class FakeEngine(FakeLogin):
 def make_account(user_id: int, **overrides) -> dict:
     now = local_now(cfg.config.tz)
     row = {
-        "user_id": user_id, "csu_username": f"9{next(_counter):08d}",
+        "user_id": user_id, "csu_username": f"94{next(_counter):07d}",
         "password_enc": encrypt_secret("whatever"), "enabled": 1, "dkdz": "",
         "created_at": to_local_iso(now), "updated_at": to_local_iso(now),
     }
@@ -308,6 +308,36 @@ def test_healthy_exits_are_round_robin(monkeypatch):
         "http://127.0.0.1:1091", "http://127.0.0.1:1092", "",
         "http://127.0.0.1:1091", "http://127.0.0.1:1092", "",
     ]
+
+
+def test_exit_summary_counts_healthy_exits(monkeypatch):
+    from app import exits
+
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
+        update={"outbound_proxies": (
+            "http://127.0.0.1:1091", "http://127.0.0.1:1092")}))
+    exits.reset()
+    assert exits.summary() == {"healthy": 3, "total": 3}
+    assert exits.summary() == {"healthy": 3, "total": 3}  # 只读，不推进轮询
+
+    exits.mark_frozen("http://127.0.0.1:1091", "学校冻结")
+    assert exits.summary() == {"healthy": 2, "total": 3}
+
+    exits.mark_frozen("http://127.0.0.1:1092", "学校冻结")
+    assert exits.summary() == {"healthy": 1, "total": 3}
+    assert exits.available() is True
+
+    exits.mark_frozen("", "学校冻结")
+    assert exits.summary() == {"healthy": 0, "total": 3}
+    assert exits.available() is False
+
+
+def test_exit_summary_without_proxies(monkeypatch):
+    from app import exits
+
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(update={"outbound_proxies": ()}))
+    exits.reset()
+    assert exits.summary() == {"healthy": 1, "total": 1}
 
 
 def test_frozen_exit_retries_on_fallback(real_login, audit, monkeypatch):

@@ -21,33 +21,45 @@ def label(exit_: str) -> str:
     return exit_ or "服务器直连"
 
 
-def current() -> str:
-    """轮询选择健康出口；全在冷却时返回配置中的第一个出口。"""
+def _is_healthy(candidate: str, now: float) -> bool:
+    return _frozen_until.get(candidate, 0.0) <= now
+
+
+def _select(candidates: list[str], now: float) -> str:
+    """在已持锁时轮询选择健康出口。"""
     global _next_index
 
-    candidates = _exits()
-    now = time.time()
-    with _lock:
-        for offset in range(len(candidates)):
-            index = (_next_index + offset) % len(candidates)
-            candidate = candidates[index]
-            if _frozen_until.get(candidate, 0.0) <= now:
-                _next_index = (index + 1) % len(candidates)
-                return candidate
+    for offset in range(len(candidates)):
+        index = (_next_index + offset) % len(candidates)
+        candidate = candidates[index]
+        if _is_healthy(candidate, now):
+            _next_index = (index + 1) % len(candidates)
+            return candidate
     return candidates[0]
 
 
+def current() -> str:
+    """轮询选择健康出口；全在冷却时返回配置中的第一个出口。"""
+    with _lock:
+        return _select(_exits(), time.time())
+
+
 def available() -> bool:
-    now = time.time()
-    return any(_frozen_until.get(candidate, 0.0) <= now for candidate in _exits())
+    with _lock:
+        now = time.time()
+        return any(_is_healthy(candidate, now) for candidate in _exits())
 
 
 def mark_frozen(frozen: str, reason: str = "") -> str | None:
     """将指定出口标记为冷却；返回下一个可用出口，没有可用出口时返回 None。"""
-    if frozen not in _exits():
-        frozen = current()
-    _frozen_until[frozen] = time.time() + cfg.config.ip_freeze_cooldown_seconds
-    switched = current() if available() else None
+    with _lock:
+        candidates = _exits()
+        now = time.time()
+        if frozen not in candidates:
+            frozen = _select(candidates, now)
+        _frozen_until[frozen] = now + cfg.config.ip_freeze_cooldown_seconds
+        switched = _select(candidates, now) if any(
+            _is_healthy(candidate, now) for candidate in candidates) else None
     log_event("exit.frozen", level="warning", exit=label(frozen), reason=reason[:120],
               cooldown_seconds=cfg.config.ip_freeze_cooldown_seconds,
               switched_to=label(switched) if switched is not None else "")
@@ -63,7 +75,17 @@ def reset() -> None:
 
 
 def snapshot() -> dict[str, int]:
-    """各出口剩余冷却秒数，供日志/查看用。"""
-    now = time.time()
-    return {label(candidate): max(0, round(_frozen_until.get(candidate, 0.0) - now))
-            for candidate in _exits()}
+    """返回各出口的剩余冷却秒数。"""
+    with _lock:
+        now = time.time()
+        return {label(candidate): max(0, round(_frozen_until.get(candidate, 0.0) - now))
+                for candidate in _exits()}
+
+
+def summary() -> dict[str, int]:
+    """返回健康出口数和出口总数。"""
+    with _lock:
+        candidates = _exits()
+        now = time.time()
+        healthy = sum(_is_healthy(candidate, now) for candidate in candidates)
+    return {"healthy": healthy, "total": len(candidates)}

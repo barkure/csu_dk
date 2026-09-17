@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app import checkin, db
 from app import config as cfg
 from app.clock import local_now, to_local_iso
-from app.crypto import encrypt_secret
+from app.crypto import decrypt_secret, encrypt_secret
 from app.csu.cas import CasIpFrozenError
 from app.csu.zhxg import ZhxgError
 from app.errors import SecretDecryptError
@@ -31,7 +31,7 @@ _counter = iter(range(1, 1000))
 def make_account(user_id: int, username: str | None = None, **overrides) -> dict:
     now = to_local_iso(local_now(cfg.config.tz))
     row = {
-        "user_id": user_id, "csu_username": username or f"9{next(_counter):08d}", "password_enc": encrypt_secret("pw"),
+        "user_id": user_id, "csu_username": username or f"91{next(_counter):07d}", "password_enc": encrypt_secret("pw"),
         "enabled": 1, "dkdz": "升华8栋", "created_at": now, "updated_at": now,
     }
     row.update(overrides)
@@ -222,6 +222,40 @@ def test_failure_log_has_no_secrets(monkeypatch):
     assert "v1." not in str(fields) and "CASTGC" not in str(fields)
 
 
+def test_bad_credentials_notifies_once_per_failure(user, monkeypatch):
+    account = make_account(user["id"], username="999111916")
+    sent = []
+    monkeypatch.setattr("app.checkin.send_credential_invalid_notice",
+                        lambda email, username: sent.append((email, username)) or {"sent": True})
+
+    error = RuntimeError("学号或密码错误")
+    checkin.mark_auth_failure(account["id"], error, str(error))
+    checkin.mark_auth_failure(account["id"], error, str(error))
+
+    assert sent == [(USER_EMAIL, "999111916")]
+
+    db.set_auth_error(account["id"], "")
+    checkin.mark_auth_failure(account["id"], error, str(error))
+    assert sent == [(USER_EMAIL, "999111916"), (USER_EMAIL, "999111916")]
+
+
+def test_credential_invalid_notice_failure_does_not_hide_account_failure(user, monkeypatch):
+    account = make_account(user["id"])
+
+    def fail(*_args):
+        raise RuntimeError("邮件服务不可用")
+
+    events = []
+    monkeypatch.setattr("app.checkin.send_credential_invalid_notice", fail)
+    monkeypatch.setattr("app.checkin.log_event",
+                        lambda event, **fields: events.append((event, fields)))
+
+    checkin.mark_auth_failure(account["id"], RuntimeError("学号或密码错误"), "学号或密码错误")
+
+    assert db.get_account_by_id(account["id"])["auth_error"] == "bad_credentials"
+    assert events[-1][0] == "account.credential_invalid_notify_failed"
+
+
 def test_checkin_stage_exception_does_not_flag_account(user, monkeypatch):
     account = make_account(user["id"])
     from app import checkin as engine
@@ -262,7 +296,7 @@ def test_api_password_change_clears_failure(client, user, monkeypatch):
     assert row["auth_error"] == ""
 
 
-def test_api_password_change_failure_records_kind(client, user, monkeypatch):
+def test_api_password_change_failure_keeps_saved_credentials(client, user, monkeypatch):
     from app.errors import AppError
 
     account = make_account(user["id"])
@@ -275,7 +309,114 @@ def test_api_password_change_failure_records_kind(client, user, monkeypatch):
     response = client.patch(f"/api/accounts/{account['id']}", json={"password": "wrong"})
     assert response.status_code == 400
 
+    saved = db.get_account_by_id(account["id"])
+    assert saved["auth_error"] == ""
+    assert decrypt_secret(saved["password_enc"]) == "pw"
+
+
+def test_existing_account_candidate_password_failure_keeps_saved_credentials(client, user, monkeypatch):
+    from app.errors import AppError
+
+    account = make_account(user["id"])
+    ui_login(client, USER_EMAIL)
+
+    def reject(*_a, **_k):
+        raise AppError("验证失败，未保存：学号或密码错误", status=400, expose=True)
+
+    monkeypatch.setattr("app.accounts.verify_login", reject)
+    response = client.post("/api/accounts", json={
+        "csuUsername": account["csu_username"], "password": "wrong",
+    })
+    assert response.status_code == 400
+
+    saved = db.get_account_by_id(account["id"])
+    assert saved["auth_error"] == ""
+    assert decrypt_secret(saved["password_enc"]) == "pw"
+
+
+def test_existing_account_saved_password_failure_records_kind(client, user, monkeypatch):
+    from app.errors import AppError
+
+    account = make_account(user["id"])
+    ui_login(client, USER_EMAIL)
+
+    def reject(*_a, **_k):
+        raise AppError("验证失败，未保存：学号或密码错误", status=400, expose=True)
+
+    monkeypatch.setattr("app.accounts.verify_login", reject)
+    response = client.post("/api/accounts", json={"csuUsername": account["csu_username"]})
+    assert response.status_code == 400
     assert db.get_account_by_id(account["id"])["auth_error"] == "bad_credentials"
+
+
+def test_other_user_cannot_add_same_student_id(client, user, monkeypatch):
+    account = make_account(user["id"], username="999222001")
+    ui_login(client, "other-status-test@example.com")
+
+    verified = []
+    monkeypatch.setattr("app.accounts.verify_login", lambda *_a, **_k: verified.append(True) or {
+        "location": None, "address": None, "session": {}, "window": (None, None),
+    })
+
+    response = client.post("/api/accounts", json={
+        "csuUsername": account["csu_username"], "password": "x",
+    })
+    assert response.status_code == 409
+    assert response.json()["error"] == "该学号已绑定至其他用户"
+    assert verified == [True], "验证密码后才能暴露绑定状态"
+
+    # 原账号没被触碰，也没有新增第二条
+    assert decrypt_secret(db.get_account_by_id(account["id"])["password_enc"]) == "pw"
+    other = db.find_user_by_email("other-status-test@example.com")
+    assert db.count_accounts(other["id"]) == 0
+
+
+def test_ui_form_shows_duplicate_message(client, user, monkeypatch):
+    account = make_account(user["id"], username="999222003")
+    ui_login(client, "ui-dup-test@example.com")
+    monkeypatch.setattr("app.accounts.verify_login", lambda *_a, **_k: {
+        "location": None, "address": None, "session": {}, "window": (None, None),
+    })
+
+    html = client.post("/ui/accounts",
+                       data={"csuUsername": account["csu_username"], "password": "x"}).text
+    assert "该学号已绑定至其他用户" in html
+
+
+def test_database_rejects_duplicate_after_precheck_race(client, user, monkeypatch):
+    account = make_account(user["id"], username="999222004")
+    ui_login(client, "race-status-test@example.com")
+    monkeypatch.setattr("app.accounts.verify_login", lambda *_a, **_k: {
+        "location": None, "address": None, "session": {}, "window": (None, None),
+    })
+    monkeypatch.setattr("app.db.account_username_taken", lambda _username: False)
+
+    response = client.post("/api/accounts", json={
+        "csuUsername": account["csu_username"], "password": "x",
+    })
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "该学号已绑定至其他用户"
+
+
+def test_owner_can_still_edit_own_account(client, user, monkeypatch):
+    account = make_account(user["id"], username="999222002")
+    db.set_auth_error(account["id"], "bad_credentials")
+    ui_login(client, USER_EMAIL)
+
+    monkeypatch.setattr("app.accounts.verify_login", lambda *_a, **_k: {
+        "location": {"canDk": True, "yxMc": "升华8栋"}, "address": "升华8栋",
+        "session": {"token": "tok", "casual": "c", "cookies": "[]"},
+        "window": ("20:00", "22:30"),
+    })
+    response = client.post("/api/accounts", json={
+        "csuUsername": account["csu_username"], "password": "new-pw",
+    })
+    assert response.status_code == 200, response.text
+
+    saved = db.get_account_by_id(account["id"])
+    assert saved["auth_error"] == ""
+    assert decrypt_secret(saved["password_enc"]) == "new-pw"
 
 
 def test_log_scrubs_secrets_inside_the_message(monkeypatch):

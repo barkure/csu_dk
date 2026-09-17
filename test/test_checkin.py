@@ -16,7 +16,7 @@ _counter = iter(range(1, 1000))
 def make_account(user_id: int, **overrides) -> dict:
     now = local_now(cfg.config.tz)
     row = {
-        "user_id": user_id, "csu_username": f"9{next(_counter):08d}",
+        "user_id": user_id, "csu_username": f"93{next(_counter):07d}",
         "password_enc": encrypt_secret("whatever"), "enabled": 1, "dkdz": "",
         "created_at": to_local_iso(now), "updated_at": to_local_iso(now),
     }
@@ -426,6 +426,62 @@ def test_engine_success_stores_address(user, monkeypatch):
     assert client.submitted["dkdz"] == "升华8栋"
     assert client.submitted["dkbc"] == "校内住宿打卡"
     assert db.get_account_by_id(account["id"])["dkdz"] == "升华8栋"
+
+
+def _submit_probe(user, monkeypatch, verify_results):
+    """创建记录调用顺序的客户端。"""
+    client = EngineClient(
+        {"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+        location={"canDk": True, "yxMc": "升华8栋"},
+    )
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
+    events = []
+    pending = list(verify_results)
+    monkeypatch.setattr(checkin, "VERIFY_RETRY_DELAY_SEC", 0.25)
+    monkeypatch.setattr(checkin.time, "sleep", lambda sec: events.append(("sleep", sec)))
+    submit = client.submit_dk
+
+    def traced_submit(**kwargs):
+        events.append("submit")
+        return submit(**kwargs)
+
+    def traced_status(dklb="PA"):
+        events.append("status")
+        if not client.submitted:  # 提交前预检
+            return {"code": "200", "data": {"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"}}
+        return {"code": "200", "data": pending.pop(0) if pending else {}}
+
+    client.submit_dk, client.dk_status = traced_submit, traced_status
+    return account, events
+
+
+def test_engine_verifies_once_when_confirmed(user, monkeypatch):
+    account, events = _submit_probe(user, monkeypatch, [{"sfydk": 1, "dksj": "2026-09-12 21:02:00"}])
+    result = engine_status(account)
+
+    assert result["status"] == "success"
+    assert events == ["status", "submit", "status"]
+
+
+def test_engine_retries_verify_after_delay(user, monkeypatch):
+    account, events = _submit_probe(user, monkeypatch, [
+        {"dksj": "2026-09-12 21:02:00"},
+        {"sfydk": 1, "dksj": "2026-09-12 21:02:00"},
+    ])
+    result = engine_status(account)
+
+    assert result["status"] == "success"
+    assert result["dksj"] == "2026-09-12 21:02:00"
+    assert events == ["status", "submit", "status", ("sleep", 0.25), "status"]
+
+
+def test_engine_fails_when_verify_never_confirms(user, monkeypatch):
+    account, events = _submit_probe(user, monkeypatch, [{}, {}])
+    result = engine_status(account)
+
+    assert result["status"] == "failed"
+    assert "复核未通过" in result["message"]
+    assert events == ["status", "submit", "status", ("sleep", 0.25), "status"]
 
 
 def test_engine_failed_when_submit_rejected(user, monkeypatch):

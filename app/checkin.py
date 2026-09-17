@@ -23,6 +23,7 @@ from .errors import (
 )
 from .locks import lock_for
 from .log import log_account_enabled_changed, log_event
+from .mailer import send_credential_invalid_notice
 from .ratelimit import FailureCooldown, SlidingWindow
 
 _login_paused_until = 0.0
@@ -43,6 +44,9 @@ _CREDENTIAL_ERRORS = (SecretDecryptError, MasterKeyMissingError, MasterKeyInvali
 OK_CODE = "200"
 NO_TASK_CODE = "331"
 BUSINESS_CODES = frozenset({OK_CODE, NO_TASK_CODE})
+
+# 学校可能延迟更新提交状态。
+VERIFY_RETRY_DELAY_SEC = 2.0
 
 ENTRY_CHECKIN = "checkin"
 ENTRY_RELOGIN = "relogin"
@@ -295,9 +299,17 @@ def mark_auth_failure(account_id: int, error: Exception, message: str) -> AuthEr
     """记录账号认证故障。"""
     kind = _failure_kind(error, message)
     if kind:
+        target = db.get_account_notification_target(account_id)
         db.set_auth_error(account_id, kind)
         log_event("checkin.auth_failed", account_id=account_id, kind=kind,
                   detail=scrub_detail(message))
+        if kind == AuthError.BAD_CREDENTIALS and target and target["auth_error"] != kind:
+            try:
+                result = send_credential_invalid_notice(target["email"], target["csu_username"])
+                log_event("account.credential_invalid_notified", account_id=account_id, sent=result["sent"])
+            except Exception as notify_error:  # noqa: BLE001 - 通知失败不影响账号状态
+                log_event("account.credential_invalid_notify_failed", level="warning", account_id=account_id,
+                          error=scrub_detail(str(notify_error)))
     return kind
 
 
@@ -462,6 +474,9 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
     if result.get("code") != OK_CODE:
         raise RuntimeError(f"提交失败：{result.get('message') or str(result)[:160]}")
     after = client.dk_status().get("data") or {}
+    if not after.get("sfydk"):
+        time.sleep(VERIFY_RETRY_DELAY_SEC)
+        after = client.dk_status().get("data") or {}
     dksj = after.get("dksj")
     if after.get("sfydk"):
         return CheckinStatus.SUCCESS, f"打卡成功（{dksj}）", dksj

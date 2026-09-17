@@ -43,6 +43,7 @@ def test_health(client):
     assert body["ok"] is True
     assert body["checkinWindow"] == {"start": "20:00", "end": "23:30"}
     assert body["mail"] is False
+    assert body["outboundExits"] == {"healthy": 1, "total": 1}
 
 
 def test_requires_login(client):
@@ -105,7 +106,7 @@ def make_account(user_id: int, username: str, **overrides) -> dict:
 def owner(client):
     login(client, "owner@example.com")
     user = db.find_user_by_email("owner@example.com")
-    username = f"9{next(_usernames):08d}"
+    username = f"92{next(_usernames):07d}"
     account = make_account(user["id"], username)
     yield client, user, account
     db.delete_account(user["id"], account["id"])

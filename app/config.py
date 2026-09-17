@@ -86,10 +86,14 @@ class Settings(BaseSettings):
     tencent_ses_secret_id: str = Field(default="", validation_alias="TENCENT_SES_SECRET_ID")
     tencent_ses_secret_key: str = Field(default="", validation_alias="TENCENT_SES_SECRET_KEY")
     tencent_ses_region: str = Field(default="ap-hongkong", validation_alias="TENCENT_SES_REGION")
-    tencent_ses_template_id: int = Field(default=0, ge=0, validation_alias="TENCENT_SES_TEMPLATE_ID")
+    tencent_ses_verification_code_template_id: int = Field(
+        default=0, ge=0, validation_alias="TENCENT_SES_VERIFICATION_CODE_TEMPLATE_ID")
+    tencent_ses_credential_invalid_template_id: int = Field(
+        default=0, ge=0, validation_alias="TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID")
     mail_from: str = Field(default="", validation_alias="MAIL_FROM")
 
-    @field_validator("tencent_ses_template_id", mode="before")
+    @field_validator("tencent_ses_verification_code_template_id", "tencent_ses_credential_invalid_template_id",
+                     mode="before")
     @classmethod
     def _blank_template_id(cls, value: object) -> object:
         return 0 if value in ("", None) else value

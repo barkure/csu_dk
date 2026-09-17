@@ -1,6 +1,8 @@
 """账号管理。"""
 from __future__ import annotations
 
+import sqlite3
+
 from . import config as cfg
 from . import db
 from .checkin import ENTRY_CREATE, ENTRY_UPDATE, mark_auth_failure, verify_login
@@ -9,6 +11,9 @@ from .crypto import decrypt_secret, encrypt_secret
 from .errors import AppError, BadRequestError
 from .locks import lock_for
 from .log import EnabledChangeSource, log_account_enabled_changed, log_event
+
+_USERNAME_BOUND_MESSAGE = "该学号已绑定至其他用户"
+_USERNAME_BOUND_DB_ERROR = "accounts.csu_username already bound"
 
 
 def _now_iso() -> str:
@@ -27,6 +32,30 @@ def _probe(username: str, password: str | None, existing: dict | None, *,
         raise
     except Exception as error:
         raise AppError(f"验证失败，未保存：{error}", status=400, expose=True) from error
+
+
+def _session_fields(probe: dict | None) -> dict:
+    session = (probe or {}).get("session") or {}
+    if not session.get("token"):
+        return {}
+    return {
+        "token": session["token"],
+        "casual": session["casual"],
+        "cookies": session["cookies"],
+        "token_at": _now_iso(),
+        "auth_error": "",
+    }
+
+
+def _insert_account(row: dict) -> dict:
+    try:
+        return db.insert_account(row)
+    except sqlite3.IntegrityError as error:
+        if _USERNAME_BOUND_DB_ERROR in str(error):
+            raise AppError(_USERNAME_BOUND_MESSAGE, status=409, expose=True) from error
+        if "UNIQUE constraint failed" in str(error):
+            raise AppError("该学号已经添加过了", status=409, expose=True) from error
+        raise
 
 
 def create_or_update(user: dict, payload: dict, *, ip: str | None = None) -> dict:
@@ -52,9 +81,11 @@ def _create_or_update_locked(user: dict, payload: dict, *, ip: str | None = None
                        entry=ENTRY_UPDATE if existing else ENTRY_CREATE,
                        user_id=user["id"], ip=ip)
     except AppError as error:
-        if existing:
+        if existing and password is None:
             mark_auth_failure(existing["id"], error.__cause__ or error, error.message)
         raise
+    if not existing and db.account_username_taken(csu_username):
+        raise AppError(_USERNAME_BOUND_MESSAGE, status=409, expose=True)
 
     fields = {
         "enabled": (existing["enabled"] if existing else 1) if payload.get("enabled") is None
@@ -65,34 +96,21 @@ def _create_or_update_locked(user: dict, payload: dict, *, ip: str | None = None
         "updated_at": _now_iso(),
     }
 
-    session = {}
-    if (probe or {}).get("session", {}).get("token"):
-        session = {
-            "token": probe["session"]["token"],
-            "casual": probe["session"]["casual"],
-            "cookies": probe["session"]["cookies"],
-            "token_at": _now_iso(),
-            "auth_error": "",
-        }
+    session = _session_fields(probe)
 
-    try:
-        if existing:
-            db.update_account(existing["id"], {
-                **fields,
-                **({"password_enc": encrypt_secret(password)} if password else {}),
-                **session,
-            })
-            account_id = existing["id"]
-        else:
-            created = db.insert_account({
-                "user_id": user["id"], "csu_username": csu_username,
-                "password_enc": encrypt_secret(password), **fields, **session, "created_at": _now_iso(),
-            })
-            account_id = created["id"]
-    except Exception as error:
-        if "UNIQUE constraint failed" in str(error):
-            raise AppError("该学号已经添加过了", status=409, expose=True) from error
-        raise
+    if existing:
+        db.update_account(existing["id"], {
+            **fields,
+            **({"password_enc": encrypt_secret(password)} if password else {}),
+            **session,
+        })
+        account_id = existing["id"]
+    else:
+        created = _insert_account({
+            "user_id": user["id"], "csu_username": csu_username,
+            "password_enc": encrypt_secret(password), **fields, **session, "created_at": _now_iso(),
+        })
+        account_id = created["id"]
 
     return {"account_id": account_id, "verify": {"ok": True, **(probe or {})}}
 
@@ -108,19 +126,10 @@ def update(user: dict, account_id: int, payload: dict, *, ip: str | None = None)
 
     if payload.get("password"):
         password = str(payload["password"])
-        try:
-            probe = _probe(account["csu_username"], password, account,
-                           entry=ENTRY_UPDATE, user_id=user["id"], ip=ip)
-        except AppError as error:
-            mark_auth_failure(account["id"], error.__cause__ or error, error.message)
-            raise
+        probe = _probe(account["csu_username"], password, account,
+                       entry=ENTRY_UPDATE, user_id=user["id"], ip=ip)
         fields["password_enc"] = encrypt_secret(password)
-        fields["auth_error"] = ""
-        if probe.get("session", {}).get("token"):
-            fields.update({
-                "token": probe["session"]["token"], "casual": probe["session"]["casual"],
-                "cookies": probe["session"]["cookies"], "token_at": _now_iso(),
-            })
+        fields.update(_session_fields(probe) or {"auth_error": ""})
     db.update_account(account_id, fields)
     if "enabled" in fields and fields["enabled"] != account["enabled"]:
         _log_enabled_change(user, account, bool(fields["enabled"]), "api")

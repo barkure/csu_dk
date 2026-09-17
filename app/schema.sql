@@ -56,6 +56,21 @@ CREATE TABLE IF NOT EXISTS users (
   last_login_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_auth_error ON accounts(auth_error);
+CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(csu_username);
 CREATE INDEX IF NOT EXISTS idx_codes_email ON login_codes(email, id DESC);
 CREATE INDEX IF NOT EXISTS idx_records_account ON records(account_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_records_account_run ON records(account_id, run_at);
+CREATE TRIGGER IF NOT EXISTS trg_accounts_unique_username
+BEFORE INSERT ON accounts
+WHEN EXISTS (SELECT 1 FROM accounts WHERE csu_username = NEW.csu_username)
+BEGIN
+  SELECT RAISE(ABORT, 'accounts.csu_username already bound');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_accounts_unique_username_update
+BEFORE UPDATE OF csu_username ON accounts
+WHEN NEW.csu_username != OLD.csu_username
+ AND EXISTS (SELECT 1 FROM accounts WHERE csu_username = NEW.csu_username)
+BEGIN
+  SELECT RAISE(ABORT, 'accounts.csu_username already bound');
+END;

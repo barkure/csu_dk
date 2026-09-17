@@ -28,7 +28,8 @@ SPECIAL = {
     "CSU_DK_CHECKIN_WINDOW_END": "23:00",
     "CSU_DK_COOKIE_SECURE": "true",            # 示例建议值与代码默认值不同
     "MAIL_FROM": "Changed <changed@example.com>",
-    "TENCENT_SES_TEMPLATE_ID": "123456",
+    "TENCENT_SES_VERIFICATION_CODE_TEMPLATE_ID": "123456",
+    "TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID": "123456",
 }
 
 
@@ -57,12 +58,16 @@ def test_data_dir_defaults_into_project(monkeypatch):
 
 
 def test_blank_template_id_is_treated_as_unset(monkeypatch):
-    monkeypatch.setenv("TENCENT_SES_TEMPLATE_ID", "")
-    assert Settings().tencent_ses_template_id == 0
+    monkeypatch.setenv("TENCENT_SES_VERIFICATION_CODE_TEMPLATE_ID", "")
+    monkeypatch.setenv("TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID", "")
+    assert Settings().tencent_ses_verification_code_template_id == 0
+    assert Settings().tencent_ses_credential_invalid_template_id == 0
 
 
 SUGGESTIONS = {
-    "MAIL_FROM", "TENCENT_SES_SECRET_ID", "TENCENT_SES_SECRET_KEY", "TENCENT_SES_TEMPLATE_ID",
+    "MAIL_FROM", "TENCENT_SES_SECRET_ID", "TENCENT_SES_SECRET_KEY",
+    "TENCENT_SES_VERIFICATION_CODE_TEMPLATE_ID",
+    "TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID",
     "CSU_DK_ALLOWED_EMAILS", "CSU_DK_COOKIE_SECURE",
 }
 

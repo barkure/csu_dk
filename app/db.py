@@ -228,6 +228,11 @@ def count_accounts(user_id: int) -> int:
     return int(row["count"]) if row else 0
 
 
+def account_username_taken(csu_username: str) -> bool:
+    """是否已有账号绑定该学号。"""
+    return _one("SELECT 1 FROM accounts WHERE csu_username = ?", (csu_username,)) is not None
+
+
 def _seal(row: dict) -> dict:
     out = dict(row)
     for key in _SECRET_COLUMNS:
@@ -262,6 +267,15 @@ def get_account(user_id: int, account_id: int) -> dict | None:
 def get_account_by_id(account_id: int) -> dict | None:
     """拿锁后重读账号，避免用排队前的旧快照。"""
     return _open(_one("SELECT * FROM accounts WHERE id = ?", (account_id,)))
+
+
+def get_account_notification_target(account_id: int) -> dict | None:
+    return _one(
+        """SELECT a.csu_username, a.auth_error, u.email
+           FROM accounts a JOIN users u ON u.id = a.user_id
+           WHERE a.id = ?""",
+        (account_id,),
+    )
 
 
 def get_account_by_username(user_id: int, csu_username: str) -> dict | None:
