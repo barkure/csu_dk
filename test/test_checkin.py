@@ -1,6 +1,7 @@
 """打卡引擎与调度。"""
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta
 
 import pytest
@@ -428,6 +429,90 @@ def test_engine_success_stores_address(user, monkeypatch):
     assert db.get_account_by_id(account["id"])["dkdz"] == "升华8栋"
 
 
+def _jitter_client(user, monkeypatch, **overrides):
+    from app import buildings
+
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": True, "yxMc": "升华8栋", "pcMi": 12},
+                          after={"sfydk": 1, "dksj": "2026-09-12 21:02:00"})
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋", **overrides)
+    monkeypatch.setattr(cfg.config, "checkin_jitter_meters", 50)
+    return account, client, buildings.resolve("升华8栋")
+
+
+def test_submit_uses_jittered_coordinates(user, monkeypatch):
+    from app import buildings
+
+    account, client, base = _jitter_client(user, monkeypatch)
+    jittered = buildings.shift(base, 10.0, 20.0)
+    monkeypatch.setattr(buildings, "scatter", lambda _point, _radius: jittered)
+
+    result = engine_status(account)
+
+    assert result["status"] == "success"
+    assert (client.submitted["jd"], client.submitted["wd"]) == jittered
+    assert buildings.distance(base, jittered) == pytest.approx(math.hypot(10.0, 20.0), abs=1.0)
+
+
+def test_jitter_uses_configured_radius(user, monkeypatch):
+    from app import buildings
+
+    account, _client, base = _jitter_client(user, monkeypatch)
+    monkeypatch.setattr(cfg.config, "checkin_jitter_meters", 80)
+    seen = []
+
+    def scatter(point, radius):
+        seen.append((point, radius))
+        return buildings.shift(point, 5.0, 0.0)
+
+    monkeypatch.setattr(buildings, "scatter", scatter)
+    assert engine_status(account)["status"] == "success"
+
+    assert seen == [(base, 80)]
+
+
+def test_zero_jitter_uses_exact_coordinates(user, monkeypatch):
+    from app import buildings
+
+    account, client, base = _jitter_client(user, monkeypatch)
+    monkeypatch.setattr(cfg.config, "checkin_jitter_meters", 0)
+    monkeypatch.setattr(buildings, "scatter", lambda *_a, **_k: pytest.fail("unexpected jitter"))
+
+    assert engine_status(account)["status"] == "success"
+    assert (client.submitted["jd"], client.submitted["wd"]) == base
+
+
+def test_invalid_jitter_falls_back_to_exact_coordinates(user, monkeypatch):
+    from app import buildings
+
+    account, client, base = _jitter_client(user, monkeypatch)
+
+    def check_location(jd, wd, dklb="PA"):
+        near = buildings.distance((jd, wd), base) < 1.0
+        return {"code": "200", "data": {"canDk": near, "yxMc": "升华8栋",
+                                        "pcMi": 5 if near else 900, "fwMi": 300}}
+
+    client.check_location = check_location
+    monkeypatch.setattr(buildings, "scatter", lambda _point, _radius: buildings.shift(base, 0.0, -900.0))
+
+    result = engine_status(account)
+
+    assert result["status"] == "success"
+    assert (client.submitted["jd"], client.submitted["wd"]) == base
+
+
+def test_jitter_does_not_update_building_cache(user, monkeypatch):
+    from app import buildings
+
+    account, _client, base = _jitter_client(user, monkeypatch)
+    monkeypatch.setattr(buildings, "scatter", lambda _point, _radius: buildings.shift(base, 10.0, 20.0))
+
+    assert engine_status(account)["status"] == "success"
+
+    assert buildings.resolve("升华8栋") == base
+    assert not buildings._learned_path().exists()
+
+
 def _submit_probe(user, monkeypatch, verify_results):
     """创建记录调用顺序的客户端。"""
     client = EngineClient(
@@ -437,8 +522,6 @@ def _submit_probe(user, monkeypatch, verify_results):
     account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
     events = []
     pending = list(verify_results)
-    monkeypatch.setattr(checkin, "VERIFY_RETRY_DELAY_SEC", 0.25)
-    monkeypatch.setattr(checkin.time, "sleep", lambda sec: events.append(("sleep", sec)))
     submit = client.submit_dk
 
     def traced_submit(**kwargs):
@@ -463,25 +546,237 @@ def test_engine_verifies_once_when_confirmed(user, monkeypatch):
     assert events == ["status", "submit", "status"]
 
 
-def test_engine_retries_verify_after_delay(user, monkeypatch):
-    account, events = _submit_probe(user, monkeypatch, [
-        {"dksj": "2026-09-12 21:02:00"},
-        {"sfydk": 1, "dksj": "2026-09-12 21:02:00"},
-    ])
+def test_engine_defers_when_verify_never_confirms(user, monkeypatch):
+    account, events = _submit_probe(user, monkeypatch, [{}])
     result = engine_status(account)
+
+    assert result["deferred"] is True
+    assert "等待学校确认" in result["message"]
+    assert events == ["status", "submit", "status"]
+    assert db.list_records(account["id"]) == []
+    assert db.get_account_by_id(account["id"])["last_status"] is None
+    assert checkin.is_verifying(account["id"]) is True
+
+
+def test_engine_defers_when_verify_read_errors(user, monkeypatch):
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": True, "yxMc": "升华8栋"})
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
+    original = client.dk_status
+
+    def dk_status(dklb="PA"):
+        if client.submitted:
+            return {"code": "500", "message": "服务异常"}
+        return original()
+
+    client.dk_status = dk_status
+    events = []
+    monkeypatch.setattr(checkin, "log_event",
+                        lambda event, **fields: events.append((event, fields)))
+    result = engine_status(account)
+
+    assert result["deferred"] is True
+    assert db.list_records(account["id"]) == []
+    failure = next(fields for event, fields in events if event == "checkin.verify_read_failed")
+    assert failure["account_id"] == account["id"]
+    assert failure["upstream_status"] == "500"
+    assert failure["detail"] == "服务异常"
+
+
+def _deferred_account(user, monkeypatch):
+    monkeypatch.setattr(checkin, "VERIFY_RECHECK_SEC", 0)
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": True, "yxMc": "升华8栋"},
+                          after={"sfydk": 0})
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
+    assert engine_status(account)["deferred"] is True
+    return account, client
+
+
+def test_resolve_verification_records_the_success(user, monkeypatch):
+    account, client = _deferred_account(user, monkeypatch)
+    task = checkin.pending_verifications(10)[0]
+
+    client._after = {"sfydk": 1, "dksj": "2026-09-12 21:02:00"}
+    result = checkin.resolve_verification(db.get_account_by_id(account["id"]))
 
     assert result["status"] == "success"
-    assert result["dksj"] == "2026-09-12 21:02:00"
-    assert events == ["status", "submit", "status", ("sleep", 0.25), "status"]
+    assert checkin.is_verifying(account["id"]) is False
+    records = db.list_records(account["id"])
+    assert [record["status"] for record in records] == ["success"]
+    assert records[0]["run_at"] == task["run_at"]
+    assert records[0]["trigger"] == "schedule"
+    saved = db.get_account_by_id(account["id"])
+    assert (saved["last_status"], saved["last_message"]) == ("success", "打卡成功（2026-09-12 21:02:00）")
 
 
-def test_engine_fails_when_verify_never_confirms(user, monkeypatch):
-    account, events = _submit_probe(user, monkeypatch, [{}, {}])
-    result = engine_status(account)
+def test_resolve_verification_requeues_then_fails(user, monkeypatch):
+    account, _client = _deferred_account(user, monkeypatch)
+
+    for _ in range(checkin.VERIFY_MAX_ROUNDS - 1):
+        assert checkin.resolve_verification(db.get_account_by_id(account["id"])) is None
+        assert checkin.is_verifying(account["id"]) is True
+
+    result = checkin.resolve_verification(db.get_account_by_id(account["id"]))
 
     assert result["status"] == "failed"
     assert "复核未通过" in result["message"]
-    assert events == ["status", "submit", "status", ("sleep", 0.25), "status"]
+    assert checkin.is_verifying(account["id"]) is False
+    assert [record["status"] for record in db.list_records(account["id"])] == ["failed"]
+
+
+def test_resolve_verification_drops_when_login_is_gone(user, monkeypatch):
+    account, _client = _deferred_account(user, monkeypatch)
+    db.update_account(account["id"], {"token": "", "cookies": None, "token_at": None})
+
+    assert checkin.resolve_verification(db.get_account_by_id(account["id"])) is None
+    assert checkin.is_verifying(account["id"]) is False
+    assert db.list_records(account["id"]) == []
+
+
+def test_pending_verification_prevents_resubmit(user, monkeypatch):
+    account, client = _deferred_account(user, monkeypatch)
+    submitted = client.submitted
+
+    again = checkin.run_checkin(db.get_account_by_id(account["id"]), "manual")
+
+    assert again["deferred"] is True
+    assert "确认中" in again["message"]
+    assert client.submitted is submitted
+    assert db.list_records(account["id"]) == []
+
+
+def test_pending_verification_is_persisted(user, monkeypatch):
+    account, _client = _deferred_account(user, monkeypatch)
+
+    task = db.get_verification(account["id"])
+
+    assert task is not None
+    assert task["trigger"] == "schedule"
+    assert task["rounds"] == 0
+    assert task["next_at"] >= task["run_at"]
+    assert task["run_at"] == checkin.pending_verifications(10)[0]["run_at"]
+
+
+def test_pending_verification_has_no_in_memory_state(user, monkeypatch):
+    account, client = _deferred_account(user, monkeypatch)
+    submitted = client.submitted
+
+    assert checkin.is_verifying(account["id"]) is True
+    assert db.get_verification(account["id"]) is not None
+
+    again = checkin.run_checkin(db.get_account_by_id(account["id"]), "schedule")
+
+    assert again["deferred"] is True
+    assert client.submitted is submitted
+
+
+def test_pending_verification_is_not_due_early(user, monkeypatch):
+    account = make_account(user["id"])
+    checkin._defer_verification(account, to_local_iso(local_now(cfg.config.tz)), "schedule")
+
+    assert checkin.pending_verifications(10) == []
+
+
+def test_previous_day_verification_is_discarded(user, monkeypatch):
+    account = make_account(user["id"], token="t", casual="c", cookies="[]",
+                           token_at=to_local_iso(local_now(cfg.config.tz)))
+    client = EngineClient({"sfydk": 1, "dksj": "2026-01-01 20:18:43"})
+    monkeypatch.setattr("app.checkin.build_client", lambda _account: client)
+    monkeypatch.setattr(checkin, "VERIFY_RECHECK_SEC", 0)
+    checkin._defer_verification(account, "2026-01-01T20:18:43", "schedule")
+
+    result = checkin.resolve_verification(db.get_account_by_id(account["id"]))
+
+    assert result is None
+    assert checkin.is_verifying(account["id"]) is False
+    assert db.list_records(account["id"]) == []
+
+
+def test_verification_read_error_is_deferred(user, monkeypatch):
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": True, "yxMc": "升华8栋", "pcMi": 12},
+                          after={"sfydk": 0})
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
+    original = client.dk_status
+
+    def dk_status(dklb="PA"):
+        if client.submitted:
+            raise ConnectionResetError("Connection reset by peer")
+        return original()
+
+    client.dk_status = dk_status
+    result = engine_status(account)
+
+    assert result["deferred"] is True
+    assert db.list_records(account["id"]) == []
+    assert db.get_verification(account["id"]) is not None
+
+
+def test_submit_timeout_is_deferred(user, monkeypatch):
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": True, "yxMc": "升华8栋", "pcMi": 12})
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
+
+    def submit_dk(**_kwargs):
+        raise TimeoutError("HTTPSConnectionPool: Read timed out")
+
+    client.submit_dk = submit_dk
+    result = engine_status(account)
+
+    assert result["deferred"] is True
+    assert db.list_records(account["id"]) == []
+    assert db.get_verification(account["id"]) is not None
+
+
+def test_explicit_submit_rejection_fails(user, monkeypatch):
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": True, "yxMc": "升华8栋", "pcMi": 12},
+                          submit={"code": "500", "message": "服务异常"})
+    account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
+
+    result = engine_status(account)
+
+    assert result["status"] == "failed"
+    assert "提交失败" in result["message"]
+    assert db.get_verification(account["id"]) is None
+
+
+def test_failed_attempt_does_not_overwrite_the_days_success(user, monkeypatch):
+    account = make_account(user["id"], token="t", casual="c", cookies="[]",
+                           token_at=to_local_iso(local_now(cfg.config.tz)))
+    today = to_local_iso(local_now(cfg.config.tz))
+    db.update_account(account["id"], {"last_run_at": today, "last_status": "success",
+                                      "last_message": "打卡成功（2026-09-12 20:18:00）"})
+    monkeypatch.setattr("app.checkin.build_client", lambda _account: EngineClient({}))
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("('Connection aborted.', ConnectionResetError(104))")
+
+    monkeypatch.setattr("app.checkin.cas_login", boom)
+    result = checkin.run_checkin(db.get_account_by_id(account["id"]), "manual")
+
+    assert result["status"] == "failed"
+    saved = db.get_account_by_id(account["id"])
+    assert saved["last_status"] == "success"
+    assert saved["last_message"] == "打卡成功（2026-09-12 20:18:00）"
+    assert [record["status"] for record in db.list_records(account["id"])] == ["failed"]
+
+
+def test_yesterdays_success_does_not_mask_todays_failure(user, monkeypatch):
+    account = make_account(user["id"], token="t", casual="c", cookies="[]",
+                           token_at=to_local_iso(local_now(cfg.config.tz)))
+    db.update_account(account["id"], {"last_run_at": "2026-01-01T20:00:00", "last_status": "success",
+                                      "last_message": "打卡成功"})
+    monkeypatch.setattr("app.checkin.build_client", lambda _account: EngineClient({}))
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("连接被重置")
+
+    monkeypatch.setattr("app.checkin.cas_login", boom)
+    checkin.run_checkin(db.get_account_by_id(account["id"]), "schedule")
+
+    assert db.get_account_by_id(account["id"])["last_status"] == "failed"
 
 
 def test_engine_failed_when_submit_rejected(user, monkeypatch):
@@ -525,6 +820,46 @@ def test_batch_skips_deferred_rate_limit(user, monkeypatch):
 
     assert scheduler.run_batch(accounts=[account]) == []
     assert db.list_records(account["id"]) == []
+
+
+def test_batch_skips_account_awaiting_verification(user, monkeypatch):
+    from app import scheduler
+
+    account = make_account(user["id"])
+    now = datetime(2026, 9, 12, 21, 0)  # noqa: DTZ001
+    monkeypatch.setattr(scheduler, "local_now", lambda _tz: now)
+    monkeypatch.setattr(scheduler, "run_checkin", lambda *_args: pytest.fail("复核期间不该再打卡"))
+    checkin._defer_verification(account, "2026-09-12T20:59:00", "schedule")
+
+    assert scheduler.run_batch(accounts=[db.get_account_by_id(account["id"])]) == []
+
+
+def test_tick_dispatches_due_verifications(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(checkin, "VERIFY_RECHECK_SEC", 0)
+    account = make_account(user["id"], token="t", casual="c", cookies="[]",
+                           token_at=to_local_iso(local_now(cfg.config.tz)))
+    client = EngineClient({"sfydk": 1, "dksj": "2026-09-12 20:18:43"})
+    monkeypatch.setattr("app.checkin.build_client", lambda _account: client)
+    checkin._defer_verification(account, to_local_iso(local_now(cfg.config.tz)), "schedule")
+
+    results = scheduler.run_verifications()
+
+    assert [result["status"] for _account, result in results] == ["success"]
+    assert checkin.is_verifying(account["id"]) is False
+
+
+def test_run_verifications_drops_deleted_account(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(checkin, "VERIFY_RECHECK_SEC", 0)
+    account = make_account(user["id"])
+    checkin._defer_verification(account, "2026-09-12T20:18:43", "schedule")
+    db.delete_account(user["id"], account["id"])
+
+    assert scheduler.run_verifications() == []
+    assert checkin.is_verifying(account["id"]) is False
 
 
 def test_engine_marks_auth_error_on_bad_credentials(user, monkeypatch):

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 from functools import lru_cache
 from pathlib import Path
 
@@ -32,6 +33,17 @@ def _deg_lon_m(lat: float) -> float:
 
 def shift(point: tuple[float, float], east: float, north: float) -> tuple[float, float]:
     return (point[0] + east / _deg_lon_m(point[1]), point[1] + north / _DEG_LAT_M)
+
+
+def scatter(point: tuple[float, float], radius_m: float,
+            rng: random.Random | None = None) -> tuple[float, float]:
+    """在圆盘内按面积均匀取点，避免采样向圆心聚集。"""
+    if radius_m <= 0:
+        return point
+    rng = rng or random
+    distance_m = radius_m * math.sqrt(rng.random())
+    bearing = rng.uniform(0.0, 2 * math.pi)
+    return shift(point, distance_m * math.sin(bearing), distance_m * math.cos(bearing))
 
 
 def distance(a: tuple[float, float], b: tuple[float, float]) -> float:

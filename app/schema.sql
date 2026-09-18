@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS records (
   message    TEXT,
   dksj       TEXT
 );
+CREATE TABLE IF NOT EXISTS verifications (
+  account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  run_at     TEXT NOT NULL,
+  trigger    TEXT NOT NULL,
+  next_at    TEXT NOT NULL,
+  rounds     INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS scheduler_lease (
   id           INTEGER PRIMARY KEY CHECK (id = 1),
   owner        TEXT NOT NULL,
@@ -60,6 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(csu_username);
 CREATE INDEX IF NOT EXISTS idx_codes_email ON login_codes(email, id DESC);
 CREATE INDEX IF NOT EXISTS idx_records_account ON records(account_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_records_account_run ON records(account_id, run_at);
+CREATE INDEX IF NOT EXISTS idx_verifications_next ON verifications(next_at);
 CREATE TRIGGER IF NOT EXISTS trg_accounts_unique_username
 BEFORE INSERT ON accounts
 WHEN EXISTS (SELECT 1 FROM accounts WHERE csu_username = NEW.csu_username)

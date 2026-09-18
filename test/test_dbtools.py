@@ -69,6 +69,50 @@ def test_unique_username_trigger_allows_legacy_duplicates(tmp_path):
         conn.close()
 
 
+def test_missing_verifications_table_is_created(tmp_path):
+    old_schema = re.sub(r"CREATE TABLE IF NOT EXISTS verifications.*?;\s*", "",
+                        db._SCHEMA, flags=re.DOTALL)
+    old_schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_verifications_next[^;]*;", "", old_schema)
+    assert "verifications" not in old_schema and "verifications" in db._SCHEMA
+
+    conn = sqlite3.connect(tmp_path / "legacy.db", isolation_level=None)
+    try:
+        conn.executescript(old_schema)
+        assert "verifications" not in db._structure(conn)
+
+        db._ensure_schema(conn)
+
+        assert "verifications" in db._structure(conn)
+    finally:
+        conn.close()
+
+
+def test_missing_column_is_rejected(tmp_path):
+    old_schema = re.sub(r",?\s*auth_error\s+TEXT NOT NULL DEFAULT ''", "", db._SCHEMA)
+    old_schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_accounts_auth_error[^;]*;", "", old_schema)
+
+    conn = sqlite3.connect(tmp_path / "legacy.db", isolation_level=None)
+    try:
+        conn.executescript(old_schema)
+        with pytest.raises(RuntimeError, match="请删除旧数据库并重新启动"):
+            db._ensure_schema(conn)
+    finally:
+        conn.close()
+
+
+def test_missing_core_table_is_rejected(tmp_path):
+    old_schema = re.sub(r"CREATE TABLE IF NOT EXISTS records.*?;\s*", "",
+                        db._SCHEMA, flags=re.DOTALL)
+    old_schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_records_[^;]*;", "", old_schema)
+    conn = sqlite3.connect(tmp_path / "broken.db", isolation_level=None)
+    try:
+        conn.executescript(old_schema)
+        with pytest.raises(RuntimeError, match="缺少 records"):
+            db._ensure_schema(conn)
+    finally:
+        conn.close()
+
+
 def test_db_check_command_reports_incompatible_database(tmp_path):
     import subprocess
     import sys

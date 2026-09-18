@@ -42,6 +42,7 @@ def transaction() -> Iterator[None]:
 
 
 _SCHEMA = (pathlib.Path(__file__).with_name("schema.sql")).read_text()
+_ADDITIVE_TABLES = frozenset({"verifications"})
 
 
 def _structure(conn: sqlite3.Connection) -> dict[str, set[str]]:
@@ -52,10 +53,10 @@ def _structure(conn: sqlite3.Connection) -> dict[str, set[str]]:
 
 def missing_structure(expected: dict[str, set[str]], actual: dict[str, set[str]]) -> list[str]:
     """列出缺少的表和字段。"""
-    missing = sorted(set(expected) - set(actual))
-    missing += [f"{table}.{column}" for table, columns in expected.items() if table in actual
-                for column in sorted(columns - actual[table])]
-    return missing
+    tables = sorted(set(expected) - set(actual))
+    columns = [f"{table}.{column}" for table, names in expected.items() if table in actual
+               for column in sorted(names - actual[table])]
+    return tables + columns
 
 
 def unexpected_structure(expected: dict[str, set[str]], actual: dict[str, set[str]]) -> list[str]:
@@ -79,7 +80,8 @@ def _ensure_schema(conn: sqlite3.Connection | None = None) -> None:
     existing = _structure(conn)
     if existing:
         expected = _reference_structure()
-        missing = missing_structure(expected, existing)
+        missing = [item for item in missing_structure(expected, existing)
+                   if item not in _ADDITIVE_TABLES]
         unexpected = unexpected_structure(expected, existing)
         if missing or unexpected:
             details = []
@@ -221,6 +223,44 @@ def trim_sessions(user_id: int, keep: int) -> int:
 
 def purge_old_records(cutoff_iso: str) -> int:
     return _exec("DELETE FROM records WHERE run_at <= ?", (cutoff_iso,)).rowcount
+
+
+def upsert_verification(account_id: int, run_at: str, trigger: str, next_at: str,
+                        created_at: str) -> None:
+    _exec(
+        """INSERT INTO verifications (account_id, run_at, trigger, next_at, rounds, created_at)
+           VALUES (?, ?, ?, ?, 0, ?)
+           ON CONFLICT(account_id) DO UPDATE SET
+             run_at = excluded.run_at, trigger = excluded.trigger,
+             next_at = excluded.next_at, rounds = 0, created_at = excluded.created_at""",
+        (account_id, run_at, trigger, next_at, created_at),
+    )
+
+
+def get_verification(account_id: int) -> dict | None:
+    return _one("SELECT * FROM verifications WHERE account_id = ?", (account_id,))
+
+
+def due_verifications(now_iso: str, limit: int) -> list[dict]:
+    return _all("SELECT * FROM verifications WHERE next_at <= ? ORDER BY next_at LIMIT ?",
+                (now_iso, limit))
+
+
+def bump_verification(account_id: int, next_at: str) -> None:
+    _exec("UPDATE verifications SET rounds = rounds + 1, next_at = ? WHERE account_id = ?",
+          (next_at, account_id))
+
+
+def delete_verification(account_id: int) -> None:
+    _exec("DELETE FROM verifications WHERE account_id = ?", (account_id,))
+
+
+def purge_verifications(cutoff_iso: str) -> int:
+    return _exec("DELETE FROM verifications WHERE created_at <= ?", (cutoff_iso,)).rowcount
+
+
+def clear_verifications() -> int:
+    return _exec("DELETE FROM verifications").rowcount
 
 
 def count_accounts(user_id: int) -> int:

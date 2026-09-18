@@ -46,9 +46,11 @@ def _reset_login_state():
     from app import checkin, exits
 
     checkin.reset_login_state()
+    checkin.reset_verifications()
     exits.reset()
     yield
     checkin.reset_login_state()
+    checkin.reset_verifications()
     exits.reset()
 
 
@@ -65,10 +67,10 @@ def _clean_learned_buildings():
 
 
 @pytest.fixture(autouse=True)
-def _disable_verify_delay(monkeypatch):
-    from app import checkin
+def _disable_jitter(monkeypatch):
+    from app import config as cfg
 
-    monkeypatch.setattr(checkin, "VERIFY_RETRY_DELAY_SEC", 0)
+    monkeypatch.setattr(cfg.config, "checkin_jitter_meters", 0)
 
 
 @pytest.fixture(autouse=True)

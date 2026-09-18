@@ -12,9 +12,13 @@ from . import config as cfg
 from . import db
 from .auth import limiters_sweep
 from .checkin import (
+    forget_verification,
     has_fresh_login,
+    is_verifying,
     login_paused_until,
+    pending_verifications,
     refresh_login,
+    resolve_verification,
     run_checkin,
     scrub_detail,
     sweep_login_state,
@@ -65,6 +69,8 @@ def _inside_window(now: datetime) -> bool:
 
 
 def _ready(account: dict, now: datetime, force: bool = False) -> bool:
+    if is_verifying(account["id"]):
+        return False
     if force:
         return True
     start, end = _window_bounds(now)
@@ -99,6 +105,19 @@ def run_batch(trigger: Trigger | str = Trigger.SCHEDULE, force: bool = False,
     return results
 
 
+def run_verifications() -> list[tuple[dict, dict]]:
+    results = []
+    for task in pending_verifications(cfg.config.checkin_per_tick):
+        account = db.get_account_by_id(task["account_id"])
+        if not account or not account.get("enabled"):
+            forget_verification(task["account_id"])
+            continue
+        result = resolve_verification(account)
+        if result:
+            results.append((account, result))
+    return results
+
+
 def _refresh_eligible(account: dict) -> bool:
     return bool(account.get("enabled") and not account.get("auth_error")
                 and not login_paused_until())
@@ -128,10 +147,12 @@ def maintenance() -> None:
         codes = db.purge_codes_older_than(to_local_iso(now - timedelta(days=1)))
         sessions = db.purge_expired_sessions(to_local_iso(now))
         records = db.purge_old_records(to_local_iso(now - timedelta(days=cfg.config.record_retention_days)))
+        verifications = db.purge_verifications(to_local_iso(now - timedelta(days=1)))
         limiters_sweep()
         sweep_login_state()
-        if codes or sessions or records:
-            log_event("maintenance.purged", codes=codes, sessions=sessions, records=records)
+        if codes or sessions or records or verifications:
+            log_event("maintenance.purged", codes=codes, sessions=sessions, records=records,
+                      verifications=verifications)
     except Exception as error:  # noqa: BLE001 - 清理失败只记日志，不能拖垮调度线程
         print(f"[maintenance] 清理失败：{error}", flush=True)
 
@@ -153,6 +174,7 @@ def tick() -> None:
     now = local_now(cfg.config.tz)
     if _lease_owner and not _holds_lease(now):
         return
+    run_verifications()
     if _inside_window(now):
         run_batch()
 

@@ -6,6 +6,8 @@ import threading
 import time
 from datetime import timedelta
 
+import requests
+
 from . import buildings, db, exits
 from . import config as cfg
 from .clock import local_now, parse_local, to_local_iso
@@ -45,8 +47,12 @@ OK_CODE = "200"
 NO_TASK_CODE = "331"
 BUSINESS_CODES = frozenset({OK_CODE, NO_TASK_CODE})
 
-# 学校可能延迟更新提交状态。
-VERIFY_RETRY_DELAY_SEC = 2.0
+DAY_SETTLED = frozenset({CheckinStatus.SUCCESS, CheckinStatus.SKIPPED, CheckinStatus.NO_TASK})
+
+VERIFY_RECHECK_SEC = 30.0
+VERIFY_MAX_ROUNDS = 3
+
+JITTER_ATTEMPTS = 2
 
 ENTRY_CHECKIN = "checkin"
 ENTRY_RELOGIN = "relogin"
@@ -85,6 +91,22 @@ def reset_login_state() -> None:
     for limiter in (_global_attempts, _attempt_gap):
         if limiter is not None:
             limiter.reset()
+
+
+def reset_verifications() -> None:
+    db.clear_verifications()
+
+
+def is_verifying(account_id: int) -> bool:
+    return db.get_verification(account_id) is not None
+
+
+def forget_verification(account_id: int) -> None:
+    db.delete_verification(account_id)
+
+
+def pending_verifications(limit: int) -> list[dict]:
+    return db.due_verifications(to_local_iso(local_now(cfg.config.tz)), limit)
 
 
 def sweep_login_state() -> int:
@@ -397,6 +419,8 @@ def _paused_result(error: Exception) -> CheckinResult:
 
 
 def run_checkin(account: AccountRow | dict, trigger: Trigger | str = Trigger.SCHEDULE) -> CheckinResult:
+    if is_verifying(account["id"]):
+        return _verifying_result()
     return _locked(account, lambda fresh: _run(fresh, trigger))
 
 
@@ -447,7 +471,43 @@ def _determine_location(client, account) -> tuple[float, float, dict] | None:
     return coord[0], coord[1], verdict
 
 
-def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatus, str, str | None]:
+def _jitter_coord(client: ZhxgClient, account: dict,
+                  coord: tuple[float, float]) -> tuple[float, float]:
+    radius = cfg.config.checkin_jitter_meters
+    if radius <= 0:
+        return coord
+    for _ in range(JITTER_ATTEMPTS):
+        point = buildings.scatter(coord, radius)
+        try:
+            verdict = buildings.check(client, point)
+        except Exception:  # noqa: BLE001 - 失败时使用原坐标
+            continue
+        if verdict.get("canDk"):
+            return point
+    log_event("checkin.jitter_fallback", level="warning", account_id=account["id"],
+              radius_m=radius)
+    return coord
+
+
+def _read_submit_result(client: ZhxgClient, account_id: int) -> tuple[bool, str | None]:
+    try:
+        response = client.dk_status()
+    except Exception as error:  # noqa: BLE001 - 查询失败不代表打卡失败
+        log_event("checkin.verify_read_failed", level="warning", account_id=account_id,
+                  detail=scrub_detail(str(error)))
+        return False, None
+    code = str(response.get("code") or "")
+    if code != OK_CODE:
+        log_event("checkin.verify_read_failed", level="warning", account_id=account_id,
+                  upstream_status=code, detail=scrub_detail(response.get("message") or ""))
+        return False, None
+    data = response.get("data") or {}
+    if data.get("sfydk"):
+        return True, data.get("dksj")
+    return False, None
+
+
+def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatus, str, str | None] | None:
     if data.get("sfydk"):
         dksj = data.get("dksj")
         return CheckinStatus.SKIPPED, f"今日已打卡（{dksj or '—'}）", dksj
@@ -469,18 +529,20 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
                    f"（距 {location.get('yxMc') or '?'} {location.get('pcMi') or '?'} 米）")
         return CheckinStatus.FAILED, message, None
 
-    result = client.submit_dk(jd=coord[0], wd=coord[1], dkbc=data.get("dkbc") or "",
-                              dkdz=location.get("yxMc") or account.get("dkdz") or "")
+    jd, wd = _jitter_coord(client, account, coord)
+    try:
+        result = client.submit_dk(jd=jd, wd=wd, dkbc=data.get("dkbc") or "",
+                                  dkdz=location.get("yxMc") or account.get("dkdz") or "")
+    except (requests.RequestException, TimeoutError, ConnectionError) as error:
+        log_event("checkin.submit_unknown", level="warning", account_id=account["id"],
+                  detail=scrub_detail(str(error)))
+        return None
     if result.get("code") != OK_CODE:
         raise RuntimeError(f"提交失败：{result.get('message') or str(result)[:160]}")
-    after = client.dk_status().get("data") or {}
-    if not after.get("sfydk"):
-        time.sleep(VERIFY_RETRY_DELAY_SEC)
-        after = client.dk_status().get("data") or {}
-    dksj = after.get("dksj")
-    if after.get("sfydk"):
+    confirmed, dksj = _read_submit_result(client, account["id"])
+    if confirmed:
         return CheckinStatus.SUCCESS, f"打卡成功（{dksj}）", dksj
-    return CheckinStatus.FAILED, "提交返回成功但复核未通过，请手动确认", dksj
+    return None
 
 
 def _business_status(account: dict) -> tuple[ZhxgClient, dict, str]:
@@ -502,7 +564,100 @@ def _business_status(account: dict) -> tuple[ZhxgClient, dict, str]:
     return client, response, str(response.get("code") or "")
 
 
+def _settled_today(account: dict, run_at: str) -> bool:
+    return (str(account.get("last_run_at") or "")[:10] == run_at[:10]
+            and account.get("last_status") in DAY_SETTLED)
+
+
+def _record(account: dict, run_at: str, trigger: str, status: CheckinStatus,
+            message: str, dksj: str | None) -> None:
+    db.add_record(account["id"], run_at, trigger, status, message, dksj)
+    fields = {"last_run_at": run_at, "last_status": status, "last_message": message}
+    if status == CheckinStatus.FAILED and _settled_today(account, run_at):
+        fields = {}
+    if status == CheckinStatus.NO_TASK:
+        fields["enabled"] = 0
+    db.update_account(account["id"], fields)
+    if status == CheckinStatus.NO_TASK:
+        log_account_enabled_changed(user_id=account["user_id"], account_id=account["id"],
+                                    username=account.get("csu_username") or "",
+                                    enabled=False, source="school_no_task")
+
+
+def _verifying_result() -> CheckinResult:
+    return {"status": CheckinStatus.WAITING, "message": "打卡结果确认中，请稍候",
+            "dksj": None, "deferred": True}
+
+
+def _recheck_at(after_seconds: float) -> str:
+    return to_local_iso(local_now(cfg.config.tz) + timedelta(seconds=after_seconds))
+
+
+def _defer_verification(account: dict, run_at: str, trigger: str) -> CheckinResult:
+    db.upsert_verification(account["id"], run_at, trigger,
+                           _recheck_at(VERIFY_RECHECK_SEC), run_at)
+    log_event("checkin.verify_deferred", level="warning", account_id=account["id"],
+              round=1, due_in=VERIFY_RECHECK_SEC)
+    return {"status": CheckinStatus.WAITING, "message": "已提交打卡，等待学校确认",
+            "dksj": None, "deferred": True}
+
+
+def resolve_verification(account: AccountRow | dict) -> CheckinResult | None:
+    return _locked(account, _resolve_verification_body)
+
+
+def _resolve_verification_body(account: dict) -> CheckinResult | None:
+    task = db.get_verification(account["id"])
+    if task is None:
+        return None
+    run_at = str(task.get("run_at") or "")
+    today = to_local_iso(local_now(cfg.config.tz))[:10]
+    if run_at[:10] != today:
+        db.delete_verification(account["id"])
+        log_event("checkin.verify_abandoned", level="warning", account_id=account["id"],
+                  run_at=run_at)
+        return None
+
+    client = build_client(account)
+    if not client.token or not has_fresh_login(account):
+        forget_verification(account["id"])
+        return None
+
+    detail = ""
+    try:
+        response = client.dk_status()
+    except Exception as error:  # noqa: BLE001 - 查询失败不代表打卡失败
+        response, detail = {}, scrub_detail(str(error))
+    code = str(response.get("code") or "")
+    if code and code != OK_CODE:
+        detail = scrub_detail(response.get("message") or f"code={code}")
+    data = response.get("data") or {}
+    rounds = int(task.get("rounds") or 0) + 1
+
+    if code == OK_CODE and data.get("sfydk"):
+        dksj = data.get("dksj")
+        status, message = CheckinStatus.SUCCESS, f"打卡成功（{dksj}）"
+    elif rounds >= VERIFY_MAX_ROUNDS:
+        dksj = data.get("dksj")
+        status, message = CheckinStatus.FAILED, "提交返回成功但复核未通过，请手动确认"
+    else:
+        db.bump_verification(account["id"], _recheck_at(VERIFY_RECHECK_SEC))
+        log_event("checkin.verify_deferred", level="warning", account_id=account["id"],
+                  round=rounds + 1, due_in=VERIFY_RECHECK_SEC, detail=detail)
+        return None
+
+    with db.transaction():
+        _record(account, run_at, task["trigger"], status, message, dksj)
+        forget_verification(account["id"])
+    log_event("checkin.verify_resolved", account_id=account["id"], status=status,
+              rounds=rounds, detail=detail)
+    return {"status": status, "message": message, "dksj": dksj}
+
+
 def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
+    if is_verifying(account["id"]):
+        return _verifying_result()
+
     run_at = to_local_iso(local_now(cfg.config.tz))
     status, message, dksj = CheckinStatus.FAILED, "", None
 
@@ -518,7 +673,10 @@ def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
             raise RuntimeError(f"业务接口返回异常：{str(response)[:160]}")
         else:
             persist_state(account["id"], client)
-            status, message, dksj = _submit(client, account, response.get("data") or {})
+            outcome = _submit(client, account, response.get("data") or {})
+            if outcome is None:
+                return _defer_verification(account, run_at, trigger)
+            status, message, dksj = outcome
     except (LoginPausedError, CasIpFrozenError) as error:
         return _paused_result(error)
     except RateLimitError as error:
@@ -529,13 +687,5 @@ def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
     except Exception as error:  # noqa: BLE001 - 打卡失败要落库并展示，不能中断整轮调度
         message = str(error)
 
-    db.add_record(account["id"], run_at, trigger, status, message, dksj)
-    fields = {"last_run_at": run_at, "last_status": status, "last_message": message}
-    if status == CheckinStatus.NO_TASK:
-        fields["enabled"] = 0
-    db.update_account(account["id"], fields)
-    if status == CheckinStatus.NO_TASK:
-        log_account_enabled_changed(user_id=account["user_id"], account_id=account["id"],
-                                    username=account.get("csu_username") or "",
-                                    enabled=False, source="school_no_task")
+    _record(account, run_at, trigger, status, message, dksj)
     return {"status": status, "message": message, "dksj": dksj}

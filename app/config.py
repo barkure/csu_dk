@@ -72,6 +72,7 @@ class Settings(BaseSettings):
                                            validation_alias="CSU_DK_CRED_FAIL_COOLDOWN")
     checkin_window_start: str = "20:00"
     checkin_window_end: str = "23:30"
+    checkin_jitter_meters: int = Field(default=50, ge=0, le=300)
 
     trust_proxy: bool = False
     outbound_proxies: Annotated[tuple[str, ...], NoDecode] = Field(
