@@ -311,7 +311,7 @@ def get_account_by_id(account_id: int) -> dict | None:
 
 def get_account_notification_target(account_id: int) -> dict | None:
     return _one(
-        """SELECT a.csu_username, a.auth_error, u.email
+        """SELECT a.csu_username, a.auth_error, a.enabled, a.user_id, u.email
            FROM accounts a JOIN users u ON u.id = a.user_id
            WHERE a.id = ?""",
         (account_id,),

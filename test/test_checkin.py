@@ -885,6 +885,46 @@ def test_engine_failed_when_account_disabled(user, monkeypatch):
     assert "停用" in result["message"]
 
 
+def test_manual_checkin_works_on_a_disabled_account(user, monkeypatch):
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": True, "yxMc": "升华8栋", "pcMi": 12},
+                          after={"sfydk": 1, "dksj": "2026-09-21 20:18:00"})
+    account = engine_account(user, monkeypatch, client, enabled=0, dkdz="升华8栋")
+
+    result = checkin.run_checkin(account, "manual")
+
+    assert result["status"] == "success"
+    assert "打卡成功" in result["message"]
+    assert [record["status"] for record in db.list_records(account["id"])] == ["success"]
+    assert db.get_account_by_id(account["id"])["enabled"] == 0
+
+
+def test_no_task_on_a_disabled_account_is_not_an_auto_disable(user, monkeypatch):
+    client = EngineClient({})
+    account = engine_account(user, monkeypatch, client, enabled=0)
+    client.dk_status = lambda dklb="PA": {"code": "331", "message": "当前没有打卡事项", "data": None}
+    events = []
+    monkeypatch.setattr("app.log.log_event",
+                        lambda event, **fields: events.append((event, fields)))
+
+    result = checkin.run_checkin(db.get_account_by_id(account["id"]), "manual")
+
+    assert result["status"] == "no_task"
+    assert db.get_account_by_id(account["id"])["enabled"] == 0
+    assert events == []
+
+
+def test_scheduled_checkin_still_refuses_a_disabled_account(user, monkeypatch):
+    client = EngineClient({"sfydk": 0, "kdk": True})
+    account = engine_account(user, monkeypatch, client, enabled=0)
+
+    result = checkin.run_checkin(account, "schedule")
+
+    assert result["status"] == "failed"
+    assert "停用" in result["message"]
+    assert client.submitted is None
+
+
 def test_inside_window_handles_cross_midnight(monkeypatch):
     from app.scheduler import _inside_window, _window_bounds
 

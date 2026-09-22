@@ -239,6 +239,104 @@ def test_bad_credentials_notifies_once_per_failure(user, monkeypatch):
     assert sent == [(USER_EMAIL, "999111916"), (USER_EMAIL, "999111916")]
 
 
+def _stub_verify(monkeypatch):
+    monkeypatch.setattr("app.accounts.verify_login", lambda *_a, **_k: {
+        "session": {"token": "jwt", "casual": "c", "cookies": "[]"},
+    })
+
+
+def test_bad_credentials_disables_auto_checkin(user, monkeypatch):
+    account = make_account(user["id"])
+    monkeypatch.setattr("app.checkin.send_credential_invalid_notice", lambda *_a: {"sent": True})
+    events = []
+    monkeypatch.setattr("app.log.log_event", lambda event, **fields: events.append((event, fields)))
+
+    checkin.mark_auth_failure(account["id"], RuntimeError("学号或密码错误"), "学号或密码错误")
+
+    row = db.get_account_by_id(account["id"])
+    assert row["auth_error"] == "bad_credentials"
+    assert row["enabled"] == 0
+    assert [fields for event, fields in events if event == "account.enabled_changed"] == [{
+        "account_id": account["id"], "user_id": user["id"],
+        "csu_username_tail": account["csu_username"][-4:],
+        "enabled": False, "source": "auth_failed",
+    }]
+
+
+def test_bad_credentials_leaves_an_already_disabled_account_alone(user, monkeypatch):
+    account = make_account(user["id"], enabled=0)
+    monkeypatch.setattr("app.checkin.send_credential_invalid_notice", lambda *_a: {"sent": True})
+    events = []
+    monkeypatch.setattr("app.log.log_event", lambda event, **fields: events.append((event, fields)))
+
+    checkin.mark_auth_failure(account["id"], RuntimeError("学号或密码错误"), "学号或密码错误")
+
+    assert db.get_account_by_id(account["id"])["enabled"] == 0
+    assert [event for event, _ in events if event == "account.enabled_changed"] == []
+
+
+@pytest.mark.parametrize(("message", "kind"), [
+    ("账号已被锁定，请联系学校", "locked"),
+    ("CAS 要求输入验证码，但自动识别不可用", "other"),
+])
+def test_other_auth_failures_keep_auto_checkin(user, message, kind):
+    account = make_account(user["id"])
+
+    checkin.mark_auth_failure(account["id"], RuntimeError(message), message)
+
+    row = db.get_account_by_id(account["id"])
+    assert row["auth_error"] == kind
+    assert row["enabled"] == 1
+
+
+def test_reverifying_the_password_restores_auto_checkin(client, user, monkeypatch):
+    account = make_account(user["id"])
+    db.set_auth_error(account["id"], "bad_credentials")
+    db.update_account(account["id"], {"enabled": 0})
+    ui_login(client, USER_EMAIL)
+    _stub_verify(monkeypatch)
+
+    response = client.post("/ui/accounts", data={
+        "csuUsername": account["csu_username"], "password": "new-password",
+        "coords": "112.936833,28.157238", "windowStart": "20:00", "windowEnd": "22:30",
+    })
+
+    assert response.status_code == 200
+    row = db.get_account_by_id(account["id"])
+    assert row["auth_error"] == ""
+    assert row["enabled"] == 1
+
+
+def test_api_password_change_restores_auto_checkin(client, user, monkeypatch):
+    account = make_account(user["id"])
+    db.set_auth_error(account["id"], "bad_credentials")
+    db.update_account(account["id"], {"enabled": 0})
+    ui_login(client, USER_EMAIL)
+    _stub_verify(monkeypatch)
+
+    response = client.patch(f"/api/accounts/{account['id']}", json={"password": "new-password"})
+
+    assert response.status_code == 200, response.text
+    row = db.get_account_by_id(account["id"])
+    assert (row["auth_error"], row["enabled"]) == ("", 1)
+
+
+def test_editing_does_not_reenable_a_manually_disabled_account(client, user, monkeypatch):
+    account = make_account(user["id"], enabled=0)
+    ui_login(client, USER_EMAIL)
+    _stub_verify(monkeypatch)
+
+    response = client.post("/ui/accounts", data={
+        "csuUsername": account["csu_username"], "password": "new-password",
+        "coords": "112.936833,28.157238", "windowStart": "20:00", "windowEnd": "22:30",
+    })
+
+    assert response.status_code == 200
+    row = db.get_account_by_id(account["id"])
+    assert row["auth_error"] == ""
+    assert row["enabled"] == 0
+
+
 def test_credential_invalid_notice_failure_does_not_hide_account_failure(user, monkeypatch):
     account = make_account(user["id"])
 

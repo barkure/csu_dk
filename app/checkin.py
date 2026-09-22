@@ -317,6 +317,16 @@ def scrub_detail(detail: str) -> str:
     return _SECRET_IN_TEXT.sub("***", str(detail or ""))[:_DETAIL_LIMIT]
 
 
+def _disable_broken_credentials(account_id: int, target: dict) -> None:
+    if not target.get("enabled"):
+        return
+    db.update_account(account_id, {"enabled": 0,
+                                   "updated_at": to_local_iso(local_now(cfg.config.tz))})
+    log_account_enabled_changed(user_id=target["user_id"], account_id=account_id,
+                                username=target.get("csu_username") or "",
+                                enabled=False, source="auth_failed")
+
+
 def mark_auth_failure(account_id: int, error: Exception, message: str) -> AuthError | None:
     """记录账号认证故障。"""
     kind = _failure_kind(error, message)
@@ -325,13 +335,16 @@ def mark_auth_failure(account_id: int, error: Exception, message: str) -> AuthEr
         db.set_auth_error(account_id, kind)
         log_event("checkin.auth_failed", account_id=account_id, kind=kind,
                   detail=scrub_detail(message))
-        if kind == AuthError.BAD_CREDENTIALS and target and target["auth_error"] != kind:
-            try:
-                result = send_credential_invalid_notice(target["email"], target["csu_username"])
-                log_event("account.credential_invalid_notified", account_id=account_id, sent=result["sent"])
-            except Exception as notify_error:  # noqa: BLE001 - 通知失败不影响账号状态
-                log_event("account.credential_invalid_notify_failed", level="warning", account_id=account_id,
-                          error=scrub_detail(str(notify_error)))
+        if kind == AuthError.BAD_CREDENTIALS and target:
+            _disable_broken_credentials(account_id, target)
+            if target["auth_error"] != kind:
+                try:
+                    result = send_credential_invalid_notice(target["email"], target["csu_username"])
+                    log_event("account.credential_invalid_notified", account_id=account_id,
+                              sent=result["sent"])
+                except Exception as notify_error:  # noqa: BLE001 - 通知失败不影响账号状态
+                    log_event("account.credential_invalid_notify_failed", level="warning",
+                              account_id=account_id, error=scrub_detail(str(notify_error)))
     return kind
 
 
@@ -575,10 +588,12 @@ def _record(account: dict, run_at: str, trigger: str, status: CheckinStatus,
     fields = {"last_run_at": run_at, "last_status": status, "last_message": message}
     if status == CheckinStatus.FAILED and _settled_today(account, run_at):
         fields = {}
-    if status == CheckinStatus.NO_TASK:
+    # 已停用账号不重复记录自动停用。
+    auto_disabled = status == CheckinStatus.NO_TASK and account.get("enabled")
+    if auto_disabled:
         fields["enabled"] = 0
     db.update_account(account["id"], fields)
-    if status == CheckinStatus.NO_TASK:
+    if auto_disabled:
         log_account_enabled_changed(user_id=account["user_id"], account_id=account["id"],
                                     username=account.get("csu_username") or "",
                                     enabled=False, source="school_no_task")
@@ -662,7 +677,8 @@ def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
     status, message, dksj = CheckinStatus.FAILED, "", None
 
     try:
-        if not account.get("enabled"):
+        # 停用只影响自动调度。
+        if trigger != Trigger.MANUAL and not account.get("enabled"):
             raise RuntimeError("账号已停用")
 
         client, response, code = _business_status(account)

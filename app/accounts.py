@@ -8,6 +8,7 @@ from . import db
 from .checkin import ENTRY_CREATE, ENTRY_UPDATE, mark_auth_failure, verify_login
 from .clock import local_now, to_local_iso
 from .crypto import decrypt_secret, encrypt_secret
+from .domain import AuthError
 from .errors import AppError, BadRequestError
 from .locks import lock_for
 from .log import EnabledChangeSource, log_account_enabled_changed, log_event
@@ -32,6 +33,11 @@ def _probe(username: str, password: str | None, existing: dict | None, *,
         raise
     except Exception as error:
         raise AppError(f"验证失败，未保存：{error}", status=400, expose=True) from error
+
+
+def _recovering_from_bad_credentials(existing: dict | None, payload: dict) -> bool:
+    return (existing is not None and payload.get("enabled") is None
+            and existing.get("auth_error") == AuthError.BAD_CREDENTIALS)
 
 
 def _session_fields(probe: dict | None) -> dict:
@@ -97,6 +103,8 @@ def _create_or_update_locked(user: dict, payload: dict, *, ip: str | None = None
     }
 
     session = _session_fields(probe)
+    if probe is not None and _recovering_from_bad_credentials(existing, payload):
+        fields["enabled"] = 1
 
     if existing:
         db.update_account(existing["id"], {
@@ -130,6 +138,8 @@ def update(user: dict, account_id: int, payload: dict, *, ip: str | None = None)
                        entry=ENTRY_UPDATE, user_id=user["id"], ip=ip)
         fields["password_enc"] = encrypt_secret(password)
         fields.update(_session_fields(probe) or {"auth_error": ""})
+        if _recovering_from_bad_credentials(account, payload):
+            fields["enabled"] = 1
     db.update_account(account_id, fields)
     if "enabled" in fields and fields["enabled"] != account["enabled"]:
         _log_enabled_change(user, account, bool(fields["enabled"]), "api")
