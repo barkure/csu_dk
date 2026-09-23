@@ -34,15 +34,23 @@ def _now() -> tuple[str, str]:
     return to_local_iso(now), to_local_iso(now)[11:16]
 
 
-def window_passed() -> bool:
-    """跨天窗口永远算"今天稍后还有机会"，不判漏打。"""
+def window_state() -> str:
+    """当前相对打卡窗口的位置：before / inside / after。跨天窗口不判 after。"""
     start, end = cfg.config.checkin_window_start, cfg.config.checkin_window_end
     if not start or not end:
-        return False
+        return "before"
     start_minutes, end_minutes = to_minutes(start), to_minutes(end)
-    if start_minutes > end_minutes:  # 跨午夜窗口
-        return False
-    return to_minutes(_now()[1]) > end_minutes
+    now_minutes = to_minutes(_now()[1])
+    if start_minutes > end_minutes:  # 跨午夜窗口：永远是"今天稍后还有机会"
+        return "inside" if now_minutes >= start_minutes or now_minutes <= end_minutes else "before"
+    if now_minutes > end_minutes:
+        return "after"
+    return "inside" if now_minutes >= start_minutes else "before"
+
+
+def window_passed() -> bool:
+    """跨天窗口永远算"今天稍后还有机会"，不判漏打。"""
+    return window_state() == "after"
 
 
 def today_result(account: dict) -> dict:
@@ -51,10 +59,11 @@ def today_result(account: dict) -> dict:
     fresh = bool(account.get("last_status")) and str(account.get("last_run_at") or "")[:10] == today
     if not fresh:
         if not account.get("enabled"):
-            if account.get("last_status") == CheckinStatus.NO_TASK:
-                return {"label": "不用打卡", "cls": ""}
             return {"label": "已暂停", "cls": ""}
-        return {"label": "打卡失败", "cls": "err"} if window_passed() else {"label": "未到时间", "cls": ""}
+        state = window_state()
+        if state == "after":
+            return {"label": "打卡失败", "cls": "err"}
+        return {"label": "排队打卡中", "cls": ""} if state == "inside" else {"label": "未到时间", "cls": ""}
     if account["last_status"] in (CheckinStatus.SUCCESS, CheckinStatus.SKIPPED):
         return {"label": "打卡成功", "cls": "ok"}
     if account["last_status"] == CheckinStatus.NO_TASK:

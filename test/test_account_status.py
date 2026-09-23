@@ -12,7 +12,7 @@ from app.csu.cas import CasIpFrozenError
 from app.csu.zhxg import ZhxgError
 from app.errors import SecretDecryptError
 from app.main import app as fastapi_app
-from app.views import account_status, today_result, window_passed
+from app.views import account_status, today_result, window_passed, window_state
 
 USER_EMAIL = "status-test@example.com"
 
@@ -90,6 +90,23 @@ def test_window_passed_cross_midnight_always_open(monkeypatch):
         assert window_passed() is False, f"{moment} 跨午夜窗口恒算今天稍后还有机会"
 
 
+def test_window_state_has_three_phases(monkeypatch):
+    monkeypatch.setattr(cfg.config, "checkin_window_start", "20:00")
+    monkeypatch.setattr(cfg.config, "checkin_window_end", "23:30")
+    for moment, expected in (("19:59", "before"), ("20:00", "inside"),
+                             ("23:30", "inside"), ("23:31", "after")):
+        monkeypatch.setattr("app.views._now", lambda m=moment: (f"2026-09-15T{m}:00", m))
+        assert window_state() == expected, moment
+
+
+def test_account_still_queued_inside_the_window(monkeypatch):
+    """窗口内尚无今日结果时显示等待状态。"""
+    monkeypatch.setattr("app.views._now", lambda: ("2026-09-15T20:30:00", "20:30"))
+    account = {"enabled": 1, "last_status": None, "last_run_at": None}
+
+    assert today_result(account) == {"label": "排队打卡中", "cls": ""}
+
+
 def test_today_result_marks_failed_after_window_with_unpadded_end(monkeypatch):
     monkeypatch.setattr("app.views._now", lambda: ("2026-09-15T12:00:00", "12:00"))
     monkeypatch.setattr(cfg.config, "checkin_window_start", "8:00")
@@ -106,13 +123,19 @@ def test_status_ignores_last_checkin_result_and_login_state():
     assert account_status(not_logged_in)["text"] == "正常"
 
 
-def test_no_task_stays_visible_until_reenabled(monkeypatch):
+def test_yesterday_no_task_does_not_count_as_today(monkeypatch):
     monkeypatch.setattr("app.views._now", lambda: ("2026-09-15T19:00:00", "19:00"))
-    account = {"enabled": 0, "last_status": "no_task", "last_run_at": "2026-09-14T20:00:00"}
-    assert today_result(account) == {"label": "不用打卡", "cls": ""}
-
-    account["enabled"] = 1
+    account = {"enabled": 1, "last_status": "no_task", "last_run_at": "2026-09-14T20:00:00"}
     assert today_result(account) == {"label": "未到时间", "cls": ""}
+
+    account["enabled"] = 0  # 旧版自动停用的账号仍需人工重新启用
+    assert today_result(account) == {"label": "已暂停", "cls": ""}
+
+
+def test_today_no_task_is_still_visible(monkeypatch):
+    monkeypatch.setattr("app.views._now", lambda: ("2026-09-15T20:30:00", "20:30"))
+    account = {"enabled": 1, "last_status": "no_task", "last_run_at": "2026-09-15T20:10:00"}
+    assert today_result(account) == {"label": "不用打卡", "cls": ""}
 
 
 def test_disabled_account_is_not_waiting(monkeypatch):

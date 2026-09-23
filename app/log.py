@@ -50,7 +50,7 @@ structlog.configure(
 
 _logger = structlog.get_logger("csu-dk")
 
-EnabledChangeSource = Literal["ui", "api", "school_no_task", "auth_failed"]
+EnabledChangeSource = Literal["ui", "api", "auth_failed"]
 
 
 def redact(fields: dict) -> dict:

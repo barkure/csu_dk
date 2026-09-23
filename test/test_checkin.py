@@ -899,7 +899,7 @@ def test_manual_checkin_works_on_a_disabled_account(user, monkeypatch):
     assert db.get_account_by_id(account["id"])["enabled"] == 0
 
 
-def test_no_task_on_a_disabled_account_is_not_an_auto_disable(user, monkeypatch):
+def test_no_task_keeps_a_disabled_account_disabled(user, monkeypatch):
     client = EngineClient({})
     account = engine_account(user, monkeypatch, client, enabled=0)
     client.dk_status = lambda dklb="PA": {"code": "331", "message": "当前没有打卡事项", "data": None}
@@ -975,7 +975,7 @@ def test_login_survives_undecryptable_password_when_session_is_alive(monkeypatch
     assert seen["password"] is None, "应当把 None 交给 CAS，让它在真需要密码时才报错"
 
 
-def test_engine_disables_account_when_school_has_no_task(user, monkeypatch):
+def test_engine_records_no_task_without_disabling_account(user, monkeypatch):
     client = EngineClient({})
     account = engine_account(user, monkeypatch, client)
     client.dk_status = lambda dklb="PA": {"code": "331", "message": "当前没有打卡事项", "data": None}
@@ -991,13 +991,24 @@ def test_engine_disables_account_when_school_has_no_task(user, monkeypatch):
     assert logins == []
     assert [record["status"] for record in db.list_records(account["id"])] == ["no_task"]
     saved = db.get_account_by_id(account["id"])
-    assert saved["enabled"] == 0
+    assert saved["enabled"] == 1
+    assert saved["last_status"] == "no_task"
     assert saved["auth_error"] == ""
-    assert events == [("account.enabled_changed", {
-        "account_id": account["id"], "user_id": user["id"],
-        "csu_username_tail": account["csu_username"][-4:],
-        "enabled": False, "source": "school_no_task",
-    })]
+    assert events == []
+
+
+def test_no_task_settles_only_the_current_window(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_window_start", "20:00")
+    monkeypatch.setattr(cfg.config, "checkin_window_end", "23:30")
+    account = make_account(user["id"])
+    db.update_account(account["id"], {"last_status": "no_task", "last_run_at": "2026-09-22T20:13:35"})
+    db.add_record(account["id"], "2026-09-22T20:13:35", "schedule", "no_task", "无打卡事项")
+    account = db.get_account_by_id(account["id"])
+
+    assert scheduler._ready(account, datetime(2026, 9, 22, 21, 0)) is False  # noqa: DTZ001
+    assert scheduler._ready(account, datetime(2026, 9, 23, 21, 0)) is True  # noqa: DTZ001
 
 
 def test_engine_still_fails_on_unknown_business_code(user, monkeypatch):

@@ -593,15 +593,7 @@ def _record(account: dict, run_at: str, trigger: str, status: CheckinStatus,
     fields = {"last_run_at": run_at, "last_status": status, "last_message": message}
     if status == CheckinStatus.FAILED and _settled_today(account, run_at):
         fields = {}
-    # 已停用账号不重复记录自动停用。
-    auto_disabled = status == CheckinStatus.NO_TASK and account.get("enabled")
-    if auto_disabled:
-        fields["enabled"] = 0
     db.update_account(account["id"], fields)
-    if auto_disabled:
-        log_account_enabled_changed(user_id=account["user_id"], account_id=account["id"],
-                                    username=account.get("csu_username") or "",
-                                    enabled=False, source="school_no_task")
 
 
 def _verifying_result() -> CheckinResult:
