@@ -10,7 +10,7 @@ from fastapi.templating import Jinja2Templates
 from . import accounts as accounts_service
 from . import auth, db, netinfo
 from . import config as cfg
-from .checkin import relogin, run_checkin
+from .checkin import relogin, run_checkin, scrub_optional
 from .domain import CheckinStatus, Trigger
 from .errors import AppError, RateLimitError
 from .views import BADGE_CLASS, account_view, fmt, fmt_full, status_label
@@ -50,6 +50,16 @@ def _context(user: dict, **extra) -> dict:
         "records": [],
     }
     context.update(extra)
+    # 读取侧脱敏：旧库存量文本、上游消息、刚发生的错误都在渲染前统一过一道
+    for row in context["rows"]:
+        row["raw"]["last_message"] = scrub_optional(row["raw"].get("last_message"))
+    if context["account"]:
+        context["account"]["last_message"] = scrub_optional(context["account"].get("last_message"))
+    for record in context["records"]:
+        record["message"] = scrub_optional(record.get("message"))
+    for item in context["messages"].values():
+        item["text"] = scrub_optional(item.get("text"))
+    context["msg"] = scrub_optional(context.get("msg"))
     return context
 
 
@@ -94,8 +104,11 @@ def ui_code(request: Request, email: str = Form("")):
     context["cooldown"] = cfg.config.code_cooldown_seconds
     if result.get("sent"):
         context["msg"] = "验证码已发送，请查收邮件"
-    else:
+    elif netinfo.is_local_request(request):
         context.update(msg=f"本地调试模式，验证码：{result.get('dev_code', '')}", code=result.get("dev_code", ""))
+    else:
+        # 调试验证码只回显给本机请求；远端只提示去服务端日志看，防止公网部署时任意邮箱验证码外泄
+        context["msg"] = "本地调试模式（未配置邮件服务），验证码已打印在服务端日志"
     return _render(request, "partials/login_form.html", context)
 
 

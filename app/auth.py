@@ -38,11 +38,6 @@ limiters = {
 }
 
 
-def limiters_sweep() -> None:
-    for limiter in limiters.values():
-        limiter.sweep()
-
-
 def normalize_email(email: object) -> str:
     value = str(email or "").strip().lower()
     if not _EMAIL_RE.match(value):

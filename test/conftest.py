@@ -7,14 +7,16 @@ from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("CSU_DK_TEST_DATA_DIR", tempfile.mkdtemp(prefix="csu-dk-test-"))
-os.environ["CSU_DK_ENV_FILE"] = str(Path(os.environ["CSU_DK_TEST_DATA_DIR"]) / ".env.absent")
+_TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="csu-dk-test-"))
+# 必须覆盖（不是 setdefault）两个数据目录别名：否则继承的外部配置会把测试写进真实数据目录。
+os.environ["CSU_DK_DATA_DIR"] = str(_TEST_DATA_DIR)
+os.environ["CSU_DK_TEST_DATA_DIR"] = str(_TEST_DATA_DIR)
+os.environ["CSU_DK_ENV_FILE"] = str(_TEST_DATA_DIR / ".env.absent")
 for _secret in (
     "TENCENT_SES_SECRET_ID", "TENCENT_SES_SECRET_KEY",
     "TENCENT_SES_VERIFICATION_CODE_TEMPLATE_ID", "TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID", "MAIL_FROM",
 ):
     os.environ.pop(_secret, None)
-Path(os.environ["CSU_DK_TEST_DATA_DIR"]).mkdir(parents=True, exist_ok=True)
 
 from app import checkin as _checkin  # noqa: E402 - 必须在上面设好环境变量之后再导入
 

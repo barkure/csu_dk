@@ -13,11 +13,13 @@ from pydantic import BaseModel
 from . import accounts as accounts_service
 from . import auth, db, exits, netinfo, ui
 from . import config as cfg
-from .checkin import has_fresh_login, relogin, run_checkin
+from .checkin import has_fresh_login, relogin, run_checkin, scrub_detail, scrub_optional
 from .clock import local_now, to_local_iso
 from .domain import Trigger
 from .errors import AppError, RateLimitError, friendly_message
+from .log import log_event
 from .mailer import mailer_enabled
+from .middleware import BodyLimitMiddleware, SecurityHeadersMiddleware
 from .scheduler import start_scheduler, stop_scheduler
 from .startup import run_startup_checks
 
@@ -38,7 +40,6 @@ class AccountBody(BaseModel):
     runNow: bool = False
 
 
-MAX_BODY_BYTES = 64 * 1024
 APP_DIR = pathlib.Path(__file__).resolve().parent
 
 
@@ -72,7 +73,7 @@ def _public_account(account: dict) -> dict:
         "online": has_fresh_login(account),
         "lastRunAt": account["last_run_at"],
         "lastStatus": account["last_status"],
-        "lastMessage": account["last_message"],
+        "lastMessage": scrub_optional(account["last_message"]),
     }
 
 
@@ -95,7 +96,14 @@ async def lifespan(_app: FastAPI):
         stop_scheduler()
 
 
-app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+class AppWithSecurityHeaders(FastAPI):
+    def build_middleware_stack(self):
+        """响应头包装要盖住 ServerErrorMiddleware 的兜底 500，故套在整条栈最外层。"""
+        return SecurityHeadersMiddleware(super().build_middleware_stack())
+
+
+app = AppWithSecurityHeaders(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(BodyLimitMiddleware)
 
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 app.include_router(ui.router)
@@ -124,20 +132,8 @@ async def _bad_request(request: Request, _exc: RequestValidationError) -> JSONRe
 
 @app.exception_handler(Exception)
 async def _unexpected(request: Request, exc: Exception) -> JSONResponse:
-    print(f"[error] {exc!r}", flush=True)
+    log_event("http.unexpected_error", level="error", error=scrub_detail(repr(exc)))
     return _json_error(request, "服务端内部错误", 500)
-
-
-@app.middleware("http")
-async def _guards(request: Request, call_next):
-    length = request.headers.get("content-length")
-    if length and length.isdigit() and int(length) > MAX_BODY_BYTES:
-        return _json_error(request, "请求体过大（上限 64KB）", 413, code="payload_too_large")
-
-    response = await call_next(request)
-    if not request.url.path.startswith("/api/") and "cache-control" not in response.headers:
-        response.headers["cache-control"] = "no-cache"
-    return response
 
 
 @app.get("/api/health")
@@ -243,4 +239,5 @@ def do_relogin(request: Request, account_id: int) -> dict:
 def records(request: Request, account_id: int, limit: int = 30) -> dict:
     user = _current_user(request)
     account = _must_account(user["id"], account_id)
-    return {"records": db.list_records(account["id"], min(max(limit, 1), 200))}
+    rows = db.list_records(account["id"], min(max(limit, 1), 200))
+    return {"records": [{**row, "message": scrub_optional(row.get("message"))} for row in rows]}

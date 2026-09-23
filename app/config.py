@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import os
 import secrets
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from email_validator import EmailNotValidError, validate_email
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .errors import ConfigError, MasterKeyInvalidError, MasterKeyMissingError
@@ -37,7 +38,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    data_dir: Path = Field(default=PROJECT_ROOT / "data", validation_alias="CSU_DK_TEST_DATA_DIR")
+    # 同时兼容生产与测试目录变量，生产变量优先。
+    data_dir: Path = Field(default=PROJECT_ROOT / "data",
+                           validation_alias=AliasChoices("CSU_DK_DATA_DIR", "CSU_DK_TEST_DATA_DIR"))
     host: str = "127.0.0.1"
     port: int = Field(default=8443, ge=1, le=65535)
     tz: str = "Asia/Shanghai"
@@ -74,7 +77,10 @@ class Settings(BaseSettings):
     checkin_window_end: str = "23:30"
     checkin_jitter_meters: int = Field(default=50, ge=0, le=300)
 
+    # 仅信任明确配置的代理，由 Uvicorn 解析 XFF。
     trust_proxy: bool = False
+    trusted_proxies: Annotated[tuple[str, ...], NoDecode] = Field(
+        default=(), validation_alias="CSU_DK_TRUSTED_PROXIES")
     outbound_proxies: Annotated[tuple[str, ...], NoDecode] = Field(
         default=(), validation_alias="CSU_DK_PROXIES")
     cookie_secure: bool = False
@@ -92,6 +98,14 @@ class Settings(BaseSettings):
     tencent_ses_credential_invalid_template_id: int = Field(
         default=0, ge=0, validation_alias="TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID")
     mail_from: str = Field(default="", validation_alias="MAIL_FROM")
+
+    @field_validator("data_dir", mode="before")
+    @classmethod
+    def _non_empty_data_dir(cls, value: object) -> object:
+        """空/纯空白会被 Path 解析成当前目录 '.'，必须显式拒绝。"""
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("数据目录不能为空")
+        return value
 
     @field_validator("tencent_ses_verification_code_template_id", "tencent_ses_credential_invalid_template_id",
                      mode="before")
@@ -135,6 +149,26 @@ class Settings(BaseSettings):
                     f"CSU_DK_PROXIES 里有非法代理地址：{proxy}；"
                     "仅支持带端口的 http:// 代理（socks5 需要额外的 PySocks 依赖，本项目不带）")
         return proxies
+
+    @field_validator("trusted_proxies", mode="before")
+    @classmethod
+    def _split_trusted_proxies(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, (tuple, list)):
+            items = [str(item).strip() for item in value]
+        else:
+            items = [item.strip() for item in str(value or "").split(",")]
+        cleaned: list[str] = []
+        for item in items:
+            if not item:
+                continue
+            if item == "*":
+                raise ValueError("CSU_DK_TRUSTED_PROXIES 不支持 *：信任代理必须写明确的 IP 或 CIDR")
+            try:
+                ipaddress.ip_network(item, strict=False)
+            except ValueError as error:
+                raise ValueError(f"CSU_DK_TRUSTED_PROXIES 里有非法 IP/CIDR：{item}") from error
+            cleaned.append(item)
+        return tuple(dict.fromkeys(cleaned))
 
     @field_validator("tz")
     @classmethod

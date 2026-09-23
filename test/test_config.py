@@ -51,10 +51,12 @@ def test_documented_variable_is_actually_read(name: str, monkeypatch):
 
 
 def test_data_dir_defaults_into_project(monkeypatch):
+    monkeypatch.delenv("CSU_DK_DATA_DIR", raising=False)
     monkeypatch.delenv("CSU_DK_TEST_DATA_DIR", raising=False)
     assert Settings().data_dir == PROJECT_ROOT / "data"
     assert "CSU_DK_HOME" not in EXAMPLE.read_text()
-    assert "CSU_DK_TEST_DATA_DIR" not in EXAMPLE.read_text()   # 仅供测试，不写进部署文档
+    # 测试别名仅供 test/conftest.py 使用：.env.example 里可以提及，但不许启用赋值
+    assert not re.search(r"^CSU_DK_TEST_DATA_DIR=", EXAMPLE.read_text(), re.M)
 
 
 def test_blank_template_id_is_treated_as_unset(monkeypatch):

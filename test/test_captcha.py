@@ -4,7 +4,6 @@ from __future__ import annotations
 import pytest
 
 from app.checkin import _CREDENTIAL_ERRORS as checkin_credential_errors
-from app.checkin import NEEDS_RECREDENTIALS
 from app.csu import cas, ocr
 from app.errors import SecretDecryptError
 
@@ -142,7 +141,7 @@ def test_wrong_captcha_retries_then_gives_up(monkeypatch):
 
     assert len(session.posted) == cas.MAX_CAPTCHA_ATTEMPTS == 2
     assert session.image_hits == 2, "每轮都该重新取一张图"
-    assert NEEDS_RECREDENTIALS.search(str(error.value)), "要能触发「需要人工重登」的判定"
+    assert cas.classify_error(str(error.value)) == "captcha", "要能触发「需要人工重登」的判定"
 
 
 def test_second_attempt_succeeds(monkeypatch):
@@ -165,7 +164,7 @@ def test_no_ocr_never_submits_a_blank_captcha(monkeypatch):
 
     assert session.posted == [], "不该发那次注定失败的登录"
     assert "ddddocr" in str(error.value)
-    assert NEEDS_RECREDENTIALS.search(str(error.value))
+    assert cas.classify_error(str(error.value)) == "captcha"
 
 
 def test_captcha_image_url_is_discovered_from_page(monkeypatch):
@@ -226,7 +225,7 @@ def test_non_image_response_is_not_fed_to_ocr(monkeypatch):
 
     assert session.posted == [], "不是图片就别提交"
     assert called == [], "别把错误页喂给识别器"
-    assert NEEDS_RECREDENTIALS.search(str(error.value))
+    assert cas.classify_error(str(error.value)) == "captcha"
 
 
 def test_evidence_is_kept_for_later_inspection(monkeypatch):

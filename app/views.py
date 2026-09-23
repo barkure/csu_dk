@@ -4,6 +4,7 @@ from __future__ import annotations
 from . import config as cfg
 from .clock import local_now, to_local_iso
 from .domain import AuthError, CheckinStatus
+from .validate import to_minutes
 
 STATUS_TEXT = {
     CheckinStatus.SUCCESS: "打卡成功", CheckinStatus.SKIPPED: "已打过卡",
@@ -33,12 +34,15 @@ def _now() -> tuple[str, str]:
     return to_local_iso(now), to_local_iso(now)[11:16]
 
 
-def window_passed(_account: dict) -> bool:
+def window_passed() -> bool:
     """跨天窗口永远算"今天稍后还有机会"，不判漏打。"""
     start, end = cfg.config.checkin_window_start, cfg.config.checkin_window_end
-    if not start or not end or start > end:
+    if not start or not end:
         return False
-    return _now()[1] > end
+    start_minutes, end_minutes = to_minutes(start), to_minutes(end)
+    if start_minutes > end_minutes:  # 跨午夜窗口
+        return False
+    return to_minutes(_now()[1]) > end_minutes
 
 
 def today_result(account: dict) -> dict:
@@ -50,7 +54,7 @@ def today_result(account: dict) -> dict:
             if account.get("last_status") == CheckinStatus.NO_TASK:
                 return {"label": "不用打卡", "cls": ""}
             return {"label": "已暂停", "cls": ""}
-        return {"label": "打卡失败", "cls": "err"} if window_passed(account) else {"label": "未到时间", "cls": ""}
+        return {"label": "打卡失败", "cls": "err"} if window_passed() else {"label": "未到时间", "cls": ""}
     if account["last_status"] in (CheckinStatus.SUCCESS, CheckinStatus.SKIPPED):
         return {"label": "打卡成功", "cls": "ok"}
     if account["last_status"] == CheckinStatus.NO_TASK:

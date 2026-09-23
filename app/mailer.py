@@ -69,7 +69,7 @@ def send_login_code(email: str, code: str) -> dict:
     try:
         response = _client().SendEmail(request)
     except TencentCloudSDKException as error:
-        raise UpstreamError(f"邮件发送失败：{error}") from error
+        raise UpstreamError("邮件发送失败，请稍后重试") from error
 
     print(f"[mailer] 已发送验证码邮件 -> {email}（id={response.MessageId}）", flush=True)
     return {"sent": True, "id": response.MessageId}
@@ -94,7 +94,7 @@ def send_credential_invalid_notice(email: str, username: str) -> dict:
     try:
         response = _client().SendEmail(request)
     except TencentCloudSDKException as error:
-        raise UpstreamError(f"邮件发送失败：{error}") from error
+        raise UpstreamError("邮件发送失败，请稍后重试") from error
 
     print(f"[mailer] 已发送账号异常通知 -> {email}（id={response.MessageId}）", flush=True)
     return {"sent": True, "id": response.MessageId}

@@ -5,7 +5,7 @@ import sqlite3
 
 from . import config as cfg
 from . import db
-from .checkin import ENTRY_CREATE, ENTRY_UPDATE, mark_auth_failure, verify_login
+from .checkin import ENTRY_CREATE, ENTRY_UPDATE, mark_auth_failure, scrub_detail, verify_login
 from .clock import local_now, to_local_iso
 from .crypto import decrypt_secret, encrypt_secret
 from .domain import AuthError
@@ -32,7 +32,8 @@ def _probe(username: str, password: str | None, existing: dict | None, *,
     except AppError:
         raise
     except Exception as error:
-        raise AppError(f"验证失败，未保存：{error}", status=400, expose=True) from error
+        # 分类保留原始异常，对外只显示脱敏文本。
+        raise AppError(f"验证失败，未保存：{scrub_detail(str(error))}", status=400, expose=True) from error
 
 
 def _recovering_from_bad_credentials(existing: dict | None, payload: dict) -> bool:
@@ -88,7 +89,7 @@ def _create_or_update_locked(user: dict, payload: dict, *, ip: str | None = None
                        user_id=user["id"], ip=ip)
     except AppError as error:
         if existing and password is None:
-            mark_auth_failure(existing["id"], error.__cause__ or error, error.message)
+            mark_auth_failure(existing["id"], error.__cause__ or error, str(error.__cause__ or error))
         raise
     if not existing and db.account_username_taken(csu_username):
         raise AppError(_USERNAME_BOUND_MESSAGE, status=409, expose=True)
@@ -120,7 +121,7 @@ def _create_or_update_locked(user: dict, payload: dict, *, ip: str | None = None
         })
         account_id = created["id"]
 
-    return {"account_id": account_id, "verify": {"ok": True, **(probe or {})}}
+    return {"account_id": account_id, "verify": {"ok": True}}
 
 
 def update(user: dict, account_id: int, payload: dict, *, ip: str | None = None) -> dict:

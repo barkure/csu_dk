@@ -21,7 +21,3 @@ def to_local_iso(moment: datetime) -> str:
 
 def parse_local(iso: str) -> datetime:
     return datetime.fromisoformat(str(iso).replace("Z", ""))
-
-
-def today_local(tz: str) -> str:
-    return to_local_iso(local_now(tz))[:10]

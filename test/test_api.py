@@ -303,3 +303,22 @@ def test_edit_account_keeps_building_empty_until_checkin(owner, monkeypatch):
     saved = db.get_account_by_id(account["id"])
     assert saved["dkdz"] == ""
     db.delete_account(user["id"], account["id"])
+
+
+def test_add_account_response_hides_probe_session(owner, monkeypatch):
+    client, user, _ = owner
+    monkeypatch.setattr("app.accounts.verify_login", lambda *_args, **_kw: {
+        "session": {"token": "secret-jwt-9527", "casual": "AbCdEf12GhIjKl34",
+                    "cookies": '[{"name": "CASTGC", "value": "TGT-secret-1"}]'},
+    })
+
+    response = client.post("/api/accounts", json={"csuUsername": "977500001", "password": "x"})
+    assert response.status_code == 200, response.text
+    assert response.json()["verify"] == {"ok": True}
+    for leak in ("token", "casual", "cookies", "CASTGC",
+                 "secret-jwt-9527", "AbCdEf12GhIjKl34", "TGT-secret-1"):
+        assert leak not in response.text, f"探针会话不能进响应：{leak}"
+
+    account = db.get_account_by_username(user["id"], "977500001")
+    assert account["token"] == "secret-jwt-9527", "登录态仍要入库"
+    db.delete_account(user["id"], account["id"])

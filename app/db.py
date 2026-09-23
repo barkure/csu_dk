@@ -414,13 +414,6 @@ def list_records(account_id: int, limit: int = 30) -> list[dict]:
     return _all("SELECT * FROM records WHERE account_id = ? ORDER BY id DESC LIMIT ?", (account_id, limit))
 
 
-def has_record(account_id: int, run_at: str, status: str) -> bool:
-    """同一个账号同一秒同一结果的记录只该有一条（回传结果时用来去重）。"""
-    rows = _all("SELECT 1 FROM records WHERE account_id = ? AND run_at = ? AND status = ? LIMIT 1",
-                (account_id, run_at, status))
-    return bool(rows)
-
-
 def delete_user(email: str) -> None:
     """级联删掉用户及其账号/会话/记录（e2e 收尾用）。"""
     _exec("DELETE FROM users WHERE email = ?", (email,))

@@ -41,7 +41,6 @@ _global_attempts = (SlidingWindow(60_000, cfg.config.cas_login_per_minute)
 _attempt_gap = (SlidingWindow(cfg.config.cas_attempt_gap_seconds * 1000, 1)
                 if cfg.config.cas_attempt_gap_seconds else None)
 
-NEEDS_RECREDENTIALS = re.compile(r"密码错误|用户名或密码|未激活|锁定|验证码|无法解密")
 _CREDENTIAL_ERRORS = (SecretDecryptError, MasterKeyMissingError, MasterKeyInvalidError)
 OK_CODE = "200"
 NO_TASK_CODE = "331"
@@ -317,6 +316,11 @@ def scrub_detail(detail: str) -> str:
     return _SECRET_IN_TEXT.sub("***", str(detail or ""))[:_DETAIL_LIMIT]
 
 
+def scrub_optional(detail: str | None) -> str | None:
+    """读取侧脱敏：None 原样保留，其余同 scrub_detail（覆盖旧库存量文本）。"""
+    return scrub_detail(detail) if detail else detail
+
+
 def _disable_broken_credentials(account_id: int, target: dict) -> None:
     if not target.get("enabled"):
         return
@@ -404,8 +408,8 @@ def _relogin_body(account: dict, *, ip: str | None = None) -> dict:
         raise
     except Exception as error:  # noqa: BLE001 - 任何失败都要回给界面，不能抛出去
         message = str(error)
-        mark_auth_failure(account["id"], error, message)
-        return {"ok": False, "message": message}
+        mark_auth_failure(account["id"], error, message)  # 分类用原文，脱敏只给展示
+        return {"ok": False, "message": scrub_detail(message)}
 
 
 def refresh_login(account: dict) -> dict:
@@ -418,16 +422,16 @@ def _refresh_login_body(account: dict) -> dict:
         _login(account, entry=ENTRY_REFRESH)
         return {"ok": True, "message": "已刷新登录态"}
     except (LoginPausedError, RateLimitError) as error:
-        return {"ok": False, "deferred": True, "message": str(error)}
+        return {"ok": False, "deferred": True, "message": scrub_detail(str(error))}
     except Exception as error:  # noqa: BLE001 - 刷新失败只记账号故障，不写成打卡记录
         message = str(error)
-        mark_auth_failure(account["id"], error, message)
-        return {"ok": False, "message": message}
+        mark_auth_failure(account["id"], error, message)  # 分类用原文，脱敏只给展示
+        return {"ok": False, "message": scrub_detail(message)}
 
 
 def _paused_result(error: Exception) -> CheckinResult:
     until = login_paused_until() or (time.time() + cfg.config.ip_freeze_cooldown_seconds)
-    return {"status": CheckinStatus.FAILED, "message": str(error), "dksj": None,
+    return {"status": CheckinStatus.FAILED, "message": scrub_detail(str(error)), "dksj": None,
             "paused_until": until}
 
 
@@ -584,6 +588,7 @@ def _settled_today(account: dict, run_at: str) -> bool:
 
 def _record(account: dict, run_at: str, trigger: str, status: CheckinStatus,
             message: str, dksj: str | None) -> None:
+    message = scrub_detail(message)
     db.add_record(account["id"], run_at, trigger, status, message, dksj)
     fields = {"last_run_at": run_at, "last_status": status, "last_message": message}
     if status == CheckinStatus.FAILED and _settled_today(account, run_at):
@@ -661,6 +666,7 @@ def _resolve_verification_body(account: dict) -> CheckinResult | None:
                   round=rounds + 1, due_in=VERIFY_RECHECK_SEC, detail=detail)
         return None
 
+    message = scrub_detail(message)
     with db.transaction():
         _record(account, run_at, task["trigger"], status, message, dksj)
         forget_verification(account["id"])
@@ -697,11 +703,12 @@ def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
         return _paused_result(error)
     except RateLimitError as error:
         if trigger == Trigger.SCHEDULE:
-            return {"status": CheckinStatus.WAITING, "message": str(error), "dksj": None,
+            return {"status": CheckinStatus.WAITING, "message": scrub_detail(str(error)), "dksj": None,
                     "deferred": True}
         message = str(error)
     except Exception as error:  # noqa: BLE001 - 打卡失败要落库并展示，不能中断整轮调度
         message = str(error)
 
+    message = scrub_detail(message)
     _record(account, run_at, trigger, status, message, dksj)
     return {"status": status, "message": message, "dksj": dksj}

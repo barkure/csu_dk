@@ -97,10 +97,6 @@ def base() -> tuple[float, float]:
     return _coord(_seed().get("base")) or DEFAULT_BASE
 
 
-def names() -> list[str]:
-    return sorted(set(_seed()["points"]) | set(_learned()))
-
-
 def resolve(school_name: str) -> tuple[float, float] | None:
     name = (school_name or "").strip()
     if not name:

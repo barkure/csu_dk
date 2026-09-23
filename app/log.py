@@ -34,10 +34,7 @@ def _scrub(key: str, value: object, depth: int = 0) -> object:
 
 
 def _redact(_logger, _method, event_dict: dict) -> dict:
-    return {
-        key: ("***" if key not in _SAFE_KEYS and _SENSITIVE_KEY.search(str(key)) else _scrub(str(key), value))
-        for key, value in event_dict.items()
-    }
+    return redact(event_dict)
 
 
 structlog.configure(

@@ -10,7 +10,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from . import config as cfg
 from . import db
-from .auth import limiters_sweep
 from .checkin import (
     forget_verification,
     has_fresh_login,
@@ -148,7 +147,6 @@ def maintenance() -> None:
         sessions = db.purge_expired_sessions(to_local_iso(now))
         records = db.purge_old_records(to_local_iso(now - timedelta(days=cfg.config.record_retention_days)))
         verifications = db.purge_verifications(to_local_iso(now - timedelta(days=1)))
-        limiters_sweep()
         sweep_login_state()
         if codes or sessions or records or verifications:
             log_event("maintenance.purged", codes=codes, sessions=sessions, records=records,

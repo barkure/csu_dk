@@ -45,9 +45,15 @@ def _run() -> None:
     import uvicorn
 
     from . import config as cfg
+    from .netinfo import proxy_startup_options
 
     _banner()
-    uvicorn.run("app.main:app", host=cfg.config.host, port=cfg.config.port, log_level="warning")
+    options = proxy_startup_options()
+    if cfg.config.trust_proxy and not options.get("proxy_headers"):
+        print("[startup] 设置了 CSU_DK_TRUST_PROXY 但没有 CSU_DK_TRUSTED_PROXIES，"
+              "代理头信任未启用（fail closed）", flush=True)
+    uvicorn.run("app.main:app", host=cfg.config.host, port=cfg.config.port,
+                log_level="warning", **options)
 
 
 def _run_db(command: str, argv: list[str]) -> int:

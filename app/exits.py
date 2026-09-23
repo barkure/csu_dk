@@ -74,14 +74,6 @@ def reset() -> None:
         _next_index = 0
 
 
-def snapshot() -> dict[str, int]:
-    """返回各出口的剩余冷却秒数。"""
-    with _lock:
-        now = time.time()
-        return {label(candidate): max(0, round(_frozen_until.get(candidate, 0.0) - now))
-                for candidate in _exits()}
-
-
 def summary() -> dict[str, int]:
     """返回健康出口数和出口总数。"""
     with _lock:

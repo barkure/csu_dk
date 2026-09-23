@@ -18,7 +18,8 @@ from app.main import app
 def client():
     for limiter in auth.limiters.values():
         limiter.reset()
-    return TestClient(app)
+    # 模拟本机访问：调试验证码只回显给本机请求，远端反例另行构造
+    return TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
 
 
 def dev_code_from(html: str) -> str:
@@ -60,6 +61,39 @@ def test_code_fragment_echoes_dev_code(client):
     html = client.post("/ui/code", data={"email": "ui-a@example.com"}).text
     assert "本地调试模式，验证码：" in html
     assert dev_code_from(html)
+
+
+def test_code_fragment_hides_dev_code_for_remote(monkeypatch):
+    monkeypatch.setattr("app.auth.send_login_code",
+                        lambda email, code: {"sent": False, "dev_code": "424242"})
+    remote = TestClient(app)   # 默认 ("testclient", ...)：非本机
+    html = remote.post("/ui/code", data={"email": "ui-remote@example.com"}).text
+
+    from bs4 import BeautifulSoup
+
+    assert BeautifulSoup(html, "html.parser").select_one('input[name="code"]').get("value", "") == "", \
+        "输入框不许回填验证码"
+    assert "424242" not in html
+    assert "验证码：" not in html
+    assert "服务端日志" in html
+
+
+def test_code_fragment_hides_dev_code_behind_proxy_header(monkeypatch):
+    monkeypatch.setattr("app.auth.send_login_code",
+                        lambda email, code: {"sent": False, "dev_code": "424242"})
+    client = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
+    html = client.post("/ui/code", data={"email": "ui-proxy@example.com"},
+                       headers={"x-forwarded-for": "203.0.113.9"}).text
+    assert "424242" not in html
+    assert "验证码：" not in html, "带代理头的本地请求也不回显"
+
+
+def test_code_fragment_echoes_fixed_dev_code_for_local(monkeypatch):
+    monkeypatch.setattr("app.auth.send_login_code",
+                        lambda email, code: {"sent": False, "dev_code": "424242"})
+    client = TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000))
+    html = client.post("/ui/code", data={"email": "ui-local@example.com"}).text
+    assert "424242" in html, "本机请求保留调试回显"
 
 
 def test_code_fragment_starts_cooldown_countdown(client):

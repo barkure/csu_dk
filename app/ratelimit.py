@@ -31,19 +31,8 @@ class SlidingWindow:
         stats = self._limiter.get_window_stats(self._item, key)
         return Verdict(False, 0, max(1, round(stats.reset_time - time.time())))
 
-    def peek(self, key: str) -> int:
-        stats = self._limiter.get_window_stats(self._item, key)
-        return self._item.amount - stats.remaining
-
     def reset(self) -> None:
         self._storage.reset()
-
-    def sweep(self) -> int:
-        # 内存存储自己按窗口淘汰计数，这里只是给维护任务一个统一入口
-        return 0
-
-    def __len__(self) -> int:
-        return 0
 
 
 class FailureCooldown:
