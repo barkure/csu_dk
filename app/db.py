@@ -414,6 +414,13 @@ def list_records(account_id: int, limit: int = 30) -> list[dict]:
     return _all("SELECT * FROM records WHERE account_id = ? ORDER BY id DESC LIMIT ?", (account_id, limit))
 
 
+def list_records_in_window(account_id: int, trigger: str, start: str, end: str, limit: int) -> list[dict]:
+    """某来源在时间窗内的最近记录。LIMIT 在过滤之后生效，不会被其它来源挤掉。"""
+    return _all("""SELECT * FROM records
+                   WHERE account_id = ? AND trigger = ? AND run_at >= ? AND run_at <= ?
+                   ORDER BY id DESC LIMIT ?""", (account_id, trigger, start, end, limit))
+
+
 def delete_user(email: str) -> None:
     """级联删掉用户及其账号/会话/记录（e2e 收尾用）。"""
     _exec("DELETE FROM users WHERE email = ?", (email,))

@@ -397,6 +397,62 @@ def test_engine_reuses_account_coords_for_rental(user, monkeypatch):
     assert client.submitted["jd"] == pytest.approx(112.927056)
 
 
+def test_engine_submits_from_accepted_base_without_distance(user, monkeypatch):
+    """学校允许基准点打卡但不返回距离。"""
+    from app import buildings
+
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": True, "bxwz": 1},
+                          after={"sfydk": 1, "dksj": "2026-09-12 21:02:00"})
+    account = engine_account(user, monkeypatch, client)
+
+    result = engine_status(account)
+
+    assert result["status"] == "success"
+    assert (client.submitted["jd"], client.submitted["wd"]) == buildings.base()
+    saved = db.get_account_by_id(account["id"])
+    assert (saved["dkdz"], saved["jd"], saved["wd"]) == ("", None, None), "借来的基准点不该当成账号位置存下来"
+
+
+def test_jitter_accepts_verdict_without_distance(user, monkeypatch):
+    from app import buildings
+
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": True, "bxwz": 1},
+                          after={"sfydk": 1, "dksj": "2026-09-12 21:02:00"})
+    account = engine_account(user, monkeypatch, client)
+    monkeypatch.setattr(cfg.config, "checkin_jitter_meters", 50)
+    monkeypatch.setattr(buildings, "scatter", lambda point, _radius: buildings.shift(point, 10.0, 20.0))
+
+    result = engine_status(account)
+
+    assert result["status"] == "success"
+    expected = buildings.shift(buildings.base(), 10.0, 20.0)
+    assert (client.submitted["jd"], client.submitted["wd"]) == expected
+
+
+def test_engine_keeps_school_reason_when_location_undeterminable(user, monkeypatch):
+    """探测失败时，失败信息要带上学校返回的真实原因，而不是“—（距 ? ? 米）”。"""
+    from app.errors import UpstreamError
+
+    client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
+                          location={"canDk": False, "reason": "LOCATION_MISMATCH",
+                                    "msg": "当前位置距桃C-1约 2227 米", "pcMi": 2227,
+                                    "yxMc": "桃C-1", "fwMi": 500})
+    account = engine_account(user, monkeypatch, client)
+
+    def boom(*_args, **_kwargs):
+        raise UpstreamError("没能测定这个地址的位置，请稍后重试")
+
+    monkeypatch.setattr("app.checkin.buildings.for_student", boom)
+
+    result = engine_status(account)
+
+    assert result["status"] == "failed"
+    assert "2227" in result["message"] and "桃C-1" in result["message"]
+    assert client.submitted is None
+
+
 def test_engine_uses_cached_building_coords(user, monkeypatch):
     from app import buildings
 
@@ -1009,6 +1065,37 @@ def test_no_task_settles_only_the_current_window(user, monkeypatch):
 
     assert scheduler._ready(account, datetime(2026, 9, 22, 21, 0)) is False  # noqa: DTZ001
     assert scheduler._ready(account, datetime(2026, 9, 23, 21, 0)) is True  # noqa: DTZ001
+
+
+def test_manual_attempts_do_not_extend_scheduled_retries(user, monkeypatch):
+    """手动打卡不计入自动重试次数，也不该把自动记录挤出统计窗口。"""
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_window_start", "20:00")
+    monkeypatch.setattr(cfg.config, "checkin_window_end", "23:30")
+    account = make_account(user["id"])
+    for minute in (1, 11, 21):
+        db.add_record(account["id"], f"2026-09-22T20:{minute:02d}:00", "schedule", "failed", "失败")
+    for minute in (31, 41):
+        db.add_record(account["id"], f"2026-09-22T20:{minute:02d}:00", "manual", "failed", "失败")
+    account = db.get_account_by_id(account["id"])
+
+    assert scheduler._ready(account, datetime(2026, 9, 22, 22, 0)) is False  # noqa: DTZ001
+
+
+def test_scheduled_retry_gap_uses_scheduled_records(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_window_start", "20:00")
+    monkeypatch.setattr(cfg.config, "checkin_window_end", "23:30")
+    account = make_account(user["id"])
+    db.add_record(account["id"], "2026-09-22T20:00:00", "schedule", "failed", "失败")
+    for minute in (1, 2, 4):
+        db.add_record(account["id"], f"2026-09-22T20:{minute:02d}:00", "manual", "failed", "失败")
+    account = db.get_account_by_id(account["id"])
+
+    assert scheduler._ready(account, datetime(2026, 9, 22, 20, 5, 0)) is False  # noqa: DTZ001
+    assert scheduler._ready(account, datetime(2026, 9, 22, 20, 11, 0)) is True  # noqa: DTZ001
 
 
 def test_engine_still_fails_on_unknown_business_code(user, monkeypatch):

@@ -472,20 +472,31 @@ def _save_location(account: dict, name: str, coord: tuple[float, float] | None =
     db.update_account(account["id"], fields)
 
 
-def _determine_location(client, account) -> tuple[float, float, dict] | None:
-    """测定可用坐标：宿舍写入楼栋缓存，租房写入账号。"""
+def _base_verdict(client) -> dict:
+    """探测失败时再问一次基准点，让失败信息带上学校的真实原因。"""
+    try:
+        return buildings.verdict(client, buildings.base())
+    except Exception:  # noqa: BLE001 - 只为把报错说清楚，问不到就算了
+        return {}
+
+
+def _determine_location(client, account) -> tuple[tuple[float, float] | None, dict, str]:
+    """测定提交用坐标，返回 (坐标, 学校判定, 来源)。宿舍写楼栋缓存，租房写账号。"""
     previous = account.get("dkdz") or "未测"
     try:
-        coord, school_name, verdict, source = buildings.for_student(client, account.get("dkdz") or "")
-    except Exception:  # noqa: BLE001 - 重测只是补救，失败不能掩盖原本的打卡结果
-        return None
-    if not verdict.get("canDk"):
-        return None
-    _save_location(account, school_name, coord)
+        coord, school_name, found, source = buildings.for_student(client, account.get("dkdz") or "")
+    except Exception as error:  # noqa: BLE001 - 探测失败也要把学校的判定带回去
+        log_event("checkin.locate_failed", level="warning", account_id=account["id"],
+                  detail=scrub_detail(str(error)))
+        return None, _base_verdict(client), "failed"
+    if not found.get("canDk"):
+        return None, found, source
+    if source != "base_accepted":
+        _save_location(account, school_name, coord)
     if source == "located":
         log_event("checkin.relocated", level="warning", account_id=account["id"],
                   user_id=account.get("user_id"), building=school_name, previous=previous)
-    return coord[0], coord[1], verdict
+    return coord, found, source
 
 
 def _jitter_coord(client: ZhxgClient, account: dict,
@@ -496,10 +507,10 @@ def _jitter_coord(client: ZhxgClient, account: dict,
     for _ in range(JITTER_ATTEMPTS):
         point = buildings.scatter(coord, radius)
         try:
-            verdict = buildings.check(client, point)
+            judged = buildings.verdict(client, point)
         except Exception:  # noqa: BLE001 - 失败时使用原坐标
             continue
-        if verdict.get("canDk"):
+        if judged.get("canDk"):
             return point
     log_event("checkin.jitter_fallback", level="warning", account_id=account["id"],
               radius_m=radius)
@@ -536,11 +547,14 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
     cached = _coords_for(account)
     location = (client.check_location(*cached).get("data") or {}) if cached else {}
     coord = cached if cached and location.get("canDk") else None
+    save_coord = coord
     if coord is None:
-        measured = _determine_location(client, account)
-        if measured:
-            coord, location = (measured[0], measured[1]), measured[2]
-    _save_location(account, location.get("yxMc") or "", coord)
+        coord, measured, source = _determine_location(client, account)
+        if coord is not None or not location:
+            location = measured
+        # 基准点只在这次被学校接受，不作为账号的固定位置保存。
+        save_coord = None if source == "base_accepted" else coord
+    _save_location(account, location.get("yxMc") or "", save_coord)
     if coord is None or not location.get("canDk"):
         message = (f"位置校验未通过：{location.get('msg') or location.get('reason') or '—'}"
                    f"（距 {location.get('yxMc') or '?'} {location.get('pcMi') or '?'} 米）")

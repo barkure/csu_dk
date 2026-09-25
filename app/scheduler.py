@@ -75,11 +75,11 @@ def _ready(account: dict, now: datetime, force: bool = False) -> bool:
     start, end = _window_bounds(now)
     if not start <= now <= end or _done_in_window(account, start, end):
         return False
-    records = [record for record in db.list_records(account["id"], MAX_ATTEMPTS_PER_DAY)
-               if record["trigger"] == Trigger.SCHEDULE and start <= parse_local(record["run_at"]) <= end]
-    if len(records) >= MAX_ATTEMPTS_PER_DAY:
+    attempts = db.list_records_in_window(account["id"], Trigger.SCHEDULE,
+                                         to_local_iso(start), to_local_iso(end), MAX_ATTEMPTS_PER_DAY)
+    if len(attempts) >= MAX_ATTEMPTS_PER_DAY:
         return False
-    if records and now - parse_local(records[0]["run_at"]) < timedelta(minutes=RETRY_INTERVAL_MINUTES):
+    if attempts and now - parse_local(attempts[0]["run_at"]) < timedelta(minutes=RETRY_INTERVAL_MINUTES):
         return False
     return not login_paused_until() or has_fresh_login(account)
 

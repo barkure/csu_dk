@@ -134,12 +134,21 @@ def learn(school_name: str, coord: tuple[float, float]) -> None:
                   distance_m=round(distance(previous, coord)))
 
 
-def check(client, point: tuple[float, float]) -> dict:
+def verdict(client, point: tuple[float, float]) -> dict:
+    """查询学校对坐标的判定；可用的坐标不一定带距离。"""
     body = client.check_location(point[0], point[1])
     data = body.get("data") if str(body.get("code")) == "200" else None
-    if not isinstance(data, dict) or data.get("pcMi") is None:
-        raise UpstreamError("学校接口没有返回定位距离，请稍后重试")
+    if not isinstance(data, dict):
+        raise UpstreamError("学校接口没有返回定位判定，请稍后重试")
     data.setdefault("fwMi", 300)
+    return data
+
+
+def check(client, point: tuple[float, float]) -> dict:
+    """探点用：必须带距离，否则三点交会解不出坐标。"""
+    data = verdict(client, point)
+    if data.get("pcMi") is None:
+        raise UpstreamError("学校接口没有返回定位距离，请稍后重试")
     return data
 
 
@@ -216,13 +225,25 @@ def locate(client, start: tuple[float, float], *,
 def for_student(client, name: str = "") -> tuple[tuple[float, float], str, dict, str]:
     """返回经学校验证的坐标及其来源。"""
     school_name = (name or "").strip()
+    has_name = bool(school_name)
+    if school_name:
+        cached = resolve(school_name)
+        if cached is not None:
+            found = verdict(client, cached)
+            if found.get("canDk"):
+                return cached, school_name, found, "cache"
+
+    probe = verdict(client, base())
     if not school_name:
-        school_name = str(check(client, base()).get("yxMc") or "")
-    cached = resolve(school_name)
-    if cached is not None:
-        verdict = check(client, cached)
-        if verdict.get("canDk"):
-            return cached, school_name, verdict, "cache"
+        school_name = str(probe.get("yxMc") or "")
+    if probe.get("canDk") and probe.get("pcMi") is None:
+        return base(), school_name, probe, "base_accepted"
+    if not has_name:
+        cached = resolve(school_name)
+        if cached is not None:
+            found = verdict(client, cached)
+            if found.get("canDk"):
+                return cached, school_name, found, "cache"
     coord, measured = locate(client, base())
     learn(measured or school_name, coord)
     return coord, measured or school_name, check(client, coord), "located"
