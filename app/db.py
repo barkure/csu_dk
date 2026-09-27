@@ -415,7 +415,7 @@ def list_records(account_id: int, limit: int = 30) -> list[dict]:
 
 
 def list_records_in_window(account_id: int, trigger: str, start: str, end: str, limit: int) -> list[dict]:
-    """某来源在时间窗内的最近记录。LIMIT 在过滤之后生效，不会被其它来源挤掉。"""
+    """按触发方式和时间窗筛选记录，再限制条数。"""
     return _all("""SELECT * FROM records
                    WHERE account_id = ? AND trigger = ? AND run_at >= ? AND run_at <= ?
                    ORDER BY id DESC LIMIT ?""", (account_id, trigger, start, end, limit))

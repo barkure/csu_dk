@@ -1,4 +1,4 @@
-"""批量打卡与维护任务。"""
+"""批量打卡、刷新登录态与维护任务。"""
 from __future__ import annotations
 
 import os
@@ -29,6 +29,8 @@ from .validate import to_minutes
 
 MAX_ATTEMPTS_PER_DAY = 3
 RETRY_INTERVAL_MINUTES = 10
+# 每轮最多尝试刷新的账号数。
+REFRESH_ATTEMPTS_PER_TICK = 3
 
 _scheduler: BackgroundScheduler | None = None
 _lease_owner: str | None = None
@@ -122,19 +124,23 @@ def _refresh_eligible(account: dict) -> bool:
                 and not login_paused_until())
 
 
-def refresh_logins(accounts: list[dict] | None = None) -> list[tuple[dict, dict]]:
+def refresh_logins(accounts: list[dict] | None = None,
+                   limit: int = REFRESH_ATTEMPTS_PER_TICK) -> list[tuple[dict, dict]]:
+    """随机刷新登录态；遇到需延后执行的结果就结束本轮。"""
     source = db.all_enabled_accounts() if accounts is None else accounts
     ready = [account for account in source
              if _refresh_eligible(account) and not has_fresh_login(account)]
     if not ready:
         return []
-    account = random.choice(ready)
-    result = refresh_login(account)
-    if result.get("deferred"):
-        return []
-    log_event("login.refresh", account_id=account["id"], ok=result.get("ok"),
-              message=scrub_detail(result.get("message") or ""))
-    return [(account, result)]
+    results = []
+    for account in random.sample(ready, min(limit, len(ready))):
+        result = refresh_login(account)
+        if result.get("deferred"):
+            break
+        log_event("login.refresh", account_id=account["id"], ok=result.get("ok"),
+                  message=scrub_detail(result.get("message") or ""))
+        results.append((account, result))
+    return results
 
 
 def maintenance() -> None:
@@ -169,19 +175,14 @@ def _holds_lease(now: datetime, announce: bool = True) -> bool:
 
 
 def tick() -> None:
+    """先复核结果，再按时间窗口打卡或刷新登录态。"""
     now = local_now(cfg.config.tz)
     if _lease_owner and not _holds_lease(now):
         return
     run_verifications()
     if _inside_window(now):
         run_batch()
-
-
-def refresh_tick() -> None:
-    now = local_now(cfg.config.tz)
-    if _lease_owner and not _holds_lease(now):
-        return
-    if not _inside_window(now):
+    else:
         refresh_logins()
 
 
@@ -196,8 +197,6 @@ def start_scheduler() -> BackgroundScheduler | None:
     _scheduler = BackgroundScheduler(daemon=True)
     _scheduler.add_job(tick, "interval", seconds=cfg.config.scheduler_interval,
                        id="tick", max_instances=1, coalesce=True)
-    _scheduler.add_job(refresh_tick, "interval", seconds=cfg.config.refresh_interval,
-                       id="refresh", max_instances=1, coalesce=True)
     _scheduler.add_job(maintenance, "interval", seconds=cfg.config.maintenance_interval,
                        id="maintenance", max_instances=1, coalesce=True)
     _scheduler.start()

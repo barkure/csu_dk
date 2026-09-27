@@ -473,19 +473,19 @@ def _save_location(account: dict, name: str, coord: tuple[float, float] | None =
 
 
 def _base_verdict(client) -> dict:
-    """探测失败时再问一次基准点，让失败信息带上学校的真实原因。"""
+    """补查基准点，获取学校的拒绝原因。"""
     try:
         return buildings.verdict(client, buildings.base())
-    except Exception:  # noqa: BLE001 - 只为把报错说清楚，问不到就算了
+    except Exception:  # noqa: BLE001 - 补查失败不覆盖原错误
         return {}
 
 
 def _determine_location(client, account) -> tuple[tuple[float, float] | None, dict, str]:
-    """测定提交用坐标，返回 (坐标, 学校判定, 来源)。宿舍写楼栋缓存，租房写账号。"""
+    """返回可用坐标、学校判定及来源。"""
     previous = account.get("dkdz") or "未测"
     try:
         coord, school_name, found, source = buildings.for_student(client, account.get("dkdz") or "")
-    except Exception as error:  # noqa: BLE001 - 探测失败也要把学校的判定带回去
+    except Exception as error:  # noqa: BLE001 - 定位失败时补查学校判定
         log_event("checkin.locate_failed", level="warning", account_id=account["id"],
                   detail=scrub_detail(str(error)))
         return None, _base_verdict(client), "failed"
@@ -552,7 +552,7 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
         coord, measured, source = _determine_location(client, account)
         if coord is not None or not location:
             location = measured
-        # 基准点只在这次被学校接受，不作为账号的固定位置保存。
+        # 不将本次可用的基准点经纬度保存为账号位置。
         save_coord = None if source == "base_accepted" else coord
     _save_location(account, location.get("yxMc") or "", save_coord)
     if coord is None or not location.get("canDk"):

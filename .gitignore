@@ -15,9 +15,6 @@ __pycache__/
 *.key
 *.pem
 
-# 工具
-.commandcode/
-
 # 系统
 .DS_Store
 *.log

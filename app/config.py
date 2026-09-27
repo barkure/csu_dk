@@ -60,9 +60,8 @@ class Settings(BaseSettings):
     cas_attempt_gap_seconds: int = Field(default=15, ge=0, le=3600,
                                          validation_alias="CSU_DK_CAS_ATTEMPT_GAP")
 
-    scheduler_interval: int = Field(default=10, ge=1, le=3600, validation_alias="CSU_DK_SCHED_INTERVAL")
-    checkin_per_tick: int = Field(default=2, ge=1, le=100)
-    refresh_interval: int = Field(default=5, ge=1, le=86_400, validation_alias="CSU_DK_REFRESH_INTERVAL")
+    scheduler_interval: int = Field(default=5, ge=1, le=3600, validation_alias="CSU_DK_SCHED_INTERVAL")
+    checkin_per_tick: int = Field(default=6, ge=1, le=100)
     maintenance_interval: int = Field(default=600, ge=1, le=86_400)
     ip_freeze_cooldown_seconds: int = Field(default=300, ge=1, le=604_800,
                                             validation_alias="CSU_DK_IP_FREEZE_COOLDOWN")

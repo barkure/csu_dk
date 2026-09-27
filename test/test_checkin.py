@@ -47,10 +47,12 @@ def test_has_fresh_login_rules(user):
     assert checkin.has_fresh_login({"token": None, "token_at": None}) is False
 
 
-def test_batch_randomly_picks_two_ready_accounts(user, monkeypatch):
+@pytest.mark.parametrize("per_tick", [2, 6])
+def test_batch_respects_checkin_limit(user, monkeypatch, per_tick):
     from app import scheduler
 
-    accounts = [make_account(user["id"]) for _ in range(5)]
+    monkeypatch.setattr(cfg.config, "checkin_per_tick", per_tick)
+    accounts = [make_account(user["id"]) for _ in range(8)]
     now = datetime(2026, 9, 12, 21, 0)  # noqa: DTZ001
     monkeypatch.setattr(scheduler, "local_now", lambda _tz: now)
     calls = []
@@ -61,7 +63,7 @@ def test_batch_randomly_picks_two_ready_accounts(user, monkeypatch):
 
     results = scheduler.run_batch(accounts=accounts)
 
-    assert calls == [accounts[0]["id"], accounts[1]["id"]]
+    assert calls == [account["id"] for account in accounts[:per_tick]]
     assert [account["id"] for account, _result in results] == calls
 
 
@@ -112,24 +114,24 @@ def test_inside_window():
     assert _inside_window(datetime(2026, 9, 12, 23, 31)) is False     # noqa: DTZ001
 
 
-def test_checkin_and_refresh_ticks_use_separate_windows(monkeypatch):
+def test_tick_checkins_inside_window_and_refreshes_outside(monkeypatch):
     from app import scheduler
 
     monkeypatch.setattr(scheduler, "_lease_owner", None)
     called = []
+    monkeypatch.setattr(scheduler, "run_verifications", lambda: called.append("verify"))
     monkeypatch.setattr(scheduler, "refresh_logins", lambda: called.append("refresh"))
     monkeypatch.setattr(scheduler, "run_batch", lambda: called.append("batch"))
 
     monkeypatch.setattr(scheduler, "local_now", lambda _tz: datetime(2026, 9, 12, 10, 0))  # noqa: DTZ001
     scheduler.tick()
-    scheduler.refresh_tick()
     monkeypatch.setattr(scheduler, "local_now", lambda _tz: datetime(2026, 9, 12, 21, 0))  # noqa: DTZ001
     scheduler.tick()
-    scheduler.refresh_tick()
-    assert called == ["refresh", "batch"]
+
+    assert called == ["verify", "refresh", "verify", "batch"]
 
 
-def test_scheduler_registers_separate_intervals(monkeypatch):
+def test_scheduler_registers_one_heartbeat(monkeypatch):
     from app import scheduler
 
     jobs = []
@@ -144,13 +146,13 @@ def test_scheduler_registers_separate_intervals(monkeypatch):
     monkeypatch.setattr(scheduler, "BackgroundScheduler", lambda **_kwargs: FakeScheduler())
     monkeypatch.setattr(scheduler, "_holds_lease", lambda *_args, **_kwargs: True)
     scheduler.start_scheduler()
-    assert ("tick", cfg.config.scheduler_interval) in jobs
-    assert ("refresh_tick", cfg.config.refresh_interval) in jobs
+    assert jobs == [("tick", cfg.config.scheduler_interval),
+                    ("maintenance", cfg.config.maintenance_interval)]
     scheduler._scheduler = None
     scheduler._lease_owner = None
 
 
-def test_refresh_picks_one_stale_account(user, monkeypatch):
+def test_refresh_picks_only_stale_accounts(user, monkeypatch):
     from app import scheduler
 
     now = datetime(2026, 9, 12, 10, 0)  # noqa: DTZ001
@@ -171,6 +173,55 @@ def test_refresh_picks_one_stale_account(user, monkeypatch):
     results = scheduler.refresh_logins(accounts=[fresh, broken, stale])
     assert calls == [stale["id"]]
     assert [account["id"] for account, _result in results] == [stale["id"]]
+
+
+def test_refresh_stops_when_deferred(user, monkeypatch):
+    """刷新被延后时，不再尝试本轮剩余账号。"""
+    from app import scheduler
+
+    now = datetime(2026, 9, 12, 10, 0)  # noqa: DTZ001
+    stale_at = to_local_iso(now - timedelta(days=1))
+    accounts = [make_account(user["id"], token="t", cookies="[]", token_at=stale_at)
+                for _ in range(5)]
+    monkeypatch.setattr(scheduler, "local_now", lambda _tz: now)
+    monkeypatch.setattr(checkin, "local_now", lambda _tz: now)
+    monkeypatch.setattr(scheduler.random, "sample", lambda population, k: list(population)[:k])
+    calls = []
+
+    def refresh(account):
+        calls.append(account["id"])
+        if len(calls) == 3:
+            return {"ok": False, "deferred": True, "message": "登录请求太密集"}
+        return {"ok": True, "message": "已刷新登录态"}
+
+    monkeypatch.setattr(scheduler, "refresh_login", refresh)
+
+    results = scheduler.refresh_logins(accounts=accounts)
+
+    assert len(calls) == 3
+    assert [account["id"] for account, _result in results] == calls[:2]
+
+
+def test_refresh_bounds_attempts_per_tick(user, monkeypatch):
+    """未触发限流时，每轮仍受刷新数量上限约束。"""
+    from app import scheduler
+
+    now = datetime(2026, 9, 12, 10, 0)  # noqa: DTZ001
+    stale_at = to_local_iso(now - timedelta(days=1))
+    accounts = [make_account(user["id"], token="t", cookies="[]", token_at=stale_at)
+                for _ in range(scheduler.REFRESH_ATTEMPTS_PER_TICK + 5)]
+    monkeypatch.setattr(scheduler, "local_now", lambda _tz: now)
+    monkeypatch.setattr(checkin, "local_now", lambda _tz: now)
+    monkeypatch.setattr(scheduler.random, "sample", lambda population, k: list(population)[:k])
+    calls = []
+    monkeypatch.setattr(scheduler, "refresh_login", lambda account: (
+        calls.append(account["id"]) or {"ok": True, "message": "已刷新登录态"}
+    ))
+
+    results = scheduler.refresh_logins(accounts=accounts)
+
+    assert len(calls) == scheduler.REFRESH_ATTEMPTS_PER_TICK
+    assert len(results) == scheduler.REFRESH_ATTEMPTS_PER_TICK
 
 
 def test_refresh_stops_when_all_have_today_token(user, monkeypatch):
@@ -411,7 +462,7 @@ def test_engine_submits_from_accepted_base_without_distance(user, monkeypatch):
     assert result["status"] == "success"
     assert (client.submitted["jd"], client.submitted["wd"]) == buildings.base()
     saved = db.get_account_by_id(account["id"])
-    assert (saved["dkdz"], saved["jd"], saved["wd"]) == ("", None, None), "借来的基准点不该当成账号位置存下来"
+    assert (saved["dkdz"], saved["jd"], saved["wd"]) == ("", None, None), "基准点不应保存为账号位置"
 
 
 def test_jitter_accepts_verdict_without_distance(user, monkeypatch):
@@ -432,7 +483,7 @@ def test_jitter_accepts_verdict_without_distance(user, monkeypatch):
 
 
 def test_engine_keeps_school_reason_when_location_undeterminable(user, monkeypatch):
-    """探测失败时，失败信息要带上学校返回的真实原因，而不是“—（距 ? ? 米）”。"""
+    """定位失败时保留学校返回的原因。"""
     from app.errors import UpstreamError
 
     client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
@@ -1068,7 +1119,7 @@ def test_no_task_settles_only_the_current_window(user, monkeypatch):
 
 
 def test_manual_attempts_do_not_extend_scheduled_retries(user, monkeypatch):
-    """手动打卡不计入自动重试次数，也不该把自动记录挤出统计窗口。"""
+    """手动记录不影响自动尝试次数的统计。"""
     from app import scheduler
 
     monkeypatch.setattr(cfg.config, "checkin_window_start", "20:00")
