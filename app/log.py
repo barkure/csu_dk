@@ -1,4 +1,4 @@
-"""结构化日志 + 敏感字段脱敏（structlog 的 processor 链）。"""
+"""结构化日志与敏感信息脱敏。"""
 from __future__ import annotations
 
 import re
@@ -6,7 +6,9 @@ from typing import Literal
 
 import structlog
 
-# 白名单放行计数/状态类字段，否则宽泛的 /code/ 会把 codes 也打成 ***
+from .redaction import scrub_detail
+
+# 保留计数、状态和学号尾号。
 _SAFE_KEYS = {
     "event", "t", "level", "ms", "count", "status", "reason", "accounts", "flagged",
     "codes", "sessions", "records", "paths", "key_exists", "key_created",
@@ -15,11 +17,12 @@ _SAFE_KEYS = {
 
 _SENSITIVE_KEY = re.compile(r"pass|pwd|secret|token|cookie|castgc|authorization|email|code|casual", re.IGNORECASE)
 _SENSITIVE_VALUE = re.compile(r"^v1\.|^re_")
+_EMAIL_IN_TEXT = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def _scrub(key: str, value: object, depth: int = 0) -> object:
     if isinstance(value, str):
-        return "***" if _SENSITIVE_VALUE.search(value) else value
+        return "***" if _SENSITIVE_VALUE.search(value) else scrub_detail(_EMAIL_IN_TEXT.sub("***", value))
     if isinstance(value, dict):
         if depth > 3:
             return "[deep]"
@@ -60,8 +63,9 @@ def redact(fields: dict) -> dict:
     }
 
 
-def log_event(event: str, **fields: object) -> None:
-    _logger.info(event, **fields)
+def log_event(event: str, *, level: Literal["debug", "info", "warning", "error", "critical"] = "info",
+              **fields: object) -> None:
+    getattr(_logger, level)(event, **fields)
 
 
 def log_account_enabled_changed(*, user_id: int, account_id: int, username: str,

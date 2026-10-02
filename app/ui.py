@@ -10,9 +10,10 @@ from fastapi.templating import Jinja2Templates
 from . import accounts as accounts_service
 from . import auth, db, netinfo
 from . import config as cfg
-from .checkin import relogin, run_checkin, scrub_optional
+from .checkin import relogin, run_checkin
 from .domain import CheckinStatus, Trigger
 from .errors import AppError, RateLimitError
+from .redaction import scrub_optional
 from .views import BADGE_CLASS, account_view, fmt, fmt_full, status_label
 
 templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
@@ -38,9 +39,11 @@ def _to_login(request: Request) -> Response:
 
 
 def _context(user: dict, **extra) -> dict:
+    verifying = db.verifying_accounts(user["id"])
     context = {
         "email": user["email"],
-        "rows": [account_view(account) for account in db.list_accounts(user["id"])],
+        "rows": [account_view(account, verifying=account["id"] in verifying)
+                 for account in db.list_accounts(user["id"])],
         "open_id": None,
         "editing": None,
         "messages": {},
@@ -50,7 +53,7 @@ def _context(user: dict, **extra) -> dict:
         "records": [],
     }
     context.update(extra)
-    # 读取侧脱敏：旧库存量文本、上游消息、刚发生的错误都在渲染前统一过一道
+    # 渲染前统一脱敏。
     for row in context["rows"]:
         row["raw"]["last_message"] = scrub_optional(row["raw"].get("last_message"))
     if context["account"]:
@@ -166,7 +169,7 @@ def ui_create(request: Request, csu_username: str = Form("", alias="csuUsername"
         payload["password"] = password
 
     try:
-        result = accounts_service.create_or_update(user, payload, ip=netinfo.client_ip(request))
+        result = accounts_service.create_or_update(user, payload, ip=netinfo.client_ip(request), source="ui")
     except AppError as error:
         return _render(request, "partials/form.html", _context(user, msg=error.message, msg_kind="err"))
 
@@ -181,11 +184,7 @@ def ui_toggle(request: Request, account_id: int):
     user = _user(request)
     if not user:
         return _to_login(request)
-    account = db.get_account(user["id"], account_id)
-    if not account:
-        return _render(request, "partials/accounts.html", _context(user))
-
-    accounts_service.set_enabled(user, account_id, not bool(account["enabled"]), source="ui")
+    accounts_service.toggle_enabled(user, account_id, source="ui")
     return _render(request, "partials/accounts.html", _context(user, open_id=account_id))
 
 

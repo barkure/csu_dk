@@ -7,6 +7,11 @@ import sqlite3
 import pytest
 
 from app import db, dbtools
+from app.crypto import encrypt_secret
+
+
+def without_credential_notices(schema: str) -> str:
+    return re.sub(r"CREATE TABLE IF NOT EXISTS credential_notices.*?;\s*", "", schema, flags=re.DOTALL)
 
 
 def test_check_passes_on_current_structure():
@@ -87,28 +92,82 @@ def test_missing_verifications_table_is_created(tmp_path):
         conn.close()
 
 
-def test_missing_column_is_rejected(tmp_path):
+def test_credential_notices_upgrade_preserves_existing_data(tmp_path):
+    old_schema = without_credential_notices(db._SCHEMA)
+    moment = "2026-10-02T20:00:00"
+    sealed = {name: encrypt_secret(value) for name, value in {
+        "password_enc": "saved-password", "token": "saved-token", "casual": "saved-casual", "cookies": "[]",
+    }.items()}
+    conn = sqlite3.connect(tmp_path / "legacy.db", isolation_level=None)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(old_schema)
+        conn.execute("INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)",
+                     (4, "upgrade@example.com", moment))
+        conn.execute(
+            """INSERT INTO accounts
+               (id, user_id, csu_username, password_enc, token, casual, cookies, created_at, updated_at)
+               VALUES (12, 4, '8301210402', :password_enc, :token, :casual, :cookies, :moment, :moment)""",
+            {**sealed, "moment": moment},
+        )
+        conn.execute(
+            "INSERT INTO records (account_id, run_at, trigger, status, message) VALUES (?, ?, ?, ?, ?)",
+            (12, moment, "schedule", "failed", "查询暂时失败"),
+        )
+        conn.execute(
+            """INSERT INTO verifications (account_id, run_at, trigger, next_at, rounds, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (12, moment, "schedule", "2026-10-02T20:00:30", 1, moment),
+        )
+        before = {table: conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+                  for table in db._structure(conn)}
+        assert "credential_notices" not in before
+
+        db._ensure_schema(conn)
+        db._ensure_schema(conn)
+
+        assert db._structure(conn) == db._reference_structure()
+        assert conn.execute("SELECT * FROM credential_notices").fetchall() == []
+        for table, rows in before.items():
+            assert conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall() == rows, table
+        assert conn.execute(
+            "SELECT password_enc, token, casual, cookies FROM accounts WHERE id = 12"
+        ).fetchone() == tuple(sealed.values())
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("notices_missing", [False, True])
+def test_missing_column_is_rejected(tmp_path, notices_missing):
     old_schema = re.sub(r",?\s*auth_error\s+TEXT NOT NULL DEFAULT ''", "", db._SCHEMA)
     old_schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_accounts_auth_error[^;]*;", "", old_schema)
+    if notices_missing:
+        old_schema = without_credential_notices(old_schema)
 
     conn = sqlite3.connect(tmp_path / "legacy.db", isolation_level=None)
     try:
         conn.executescript(old_schema)
         with pytest.raises(RuntimeError, match="请删除旧数据库并重新启动"):
             db._ensure_schema(conn)
+        assert ("credential_notices" not in db._structure(conn)) == notices_missing
     finally:
         conn.close()
 
 
-def test_missing_core_table_is_rejected(tmp_path):
+@pytest.mark.parametrize("notices_missing", [False, True])
+def test_missing_core_table_is_rejected(tmp_path, notices_missing):
     old_schema = re.sub(r"CREATE TABLE IF NOT EXISTS records.*?;\s*", "",
                         db._SCHEMA, flags=re.DOTALL)
     old_schema = re.sub(r"CREATE INDEX IF NOT EXISTS idx_records_[^;]*;", "", old_schema)
+    if notices_missing:
+        old_schema = without_credential_notices(old_schema)
     conn = sqlite3.connect(tmp_path / "broken.db", isolation_level=None)
     try:
         conn.executescript(old_schema)
         with pytest.raises(RuntimeError, match="缺少 records"):
             db._ensure_schema(conn)
+        assert ("credential_notices" not in db._structure(conn)) == notices_missing
     finally:
         conn.close()
 

@@ -27,7 +27,7 @@ def _sha256(text: str) -> str:
 
 
 def hash_login_code(email: str, code: str) -> str:
-    """HMAC(master.key)：6 位码只有 100 万种可能，光加盐挡不住离线爆破。"""
+    """使用主密钥计算 HMAC，防止低熵验证码被离线穷举。"""
     key = base64.b64decode(cfg.read_master_key())
     return hmac.new(key, f"{email}:{code}".encode(), hashlib.sha256).hexdigest()
 
@@ -48,7 +48,7 @@ def normalize_email(email: object) -> str:
 
 
 def assert_email_allowed(email: str) -> None:
-    """没有独立注册步骤（验证通过即建用户），所以白名单是唯一准入门。"""
+    """验证码验证通过即创建用户，登录前检查邮箱白名单。"""
     allowed = cfg.config.allowed_emails
     if allowed and email not in allowed:
         raise ForbiddenError("该邮箱不在允许名单内，无法登录")
@@ -66,34 +66,34 @@ def _enforce(limiter: SlidingWindow, key: str, message: str) -> None:
 
 def request_login_code(email: object, ip: str = "unknown") -> dict:
     normalized = normalize_email(email)
-    now = local_now(cfg.config.tz)
-
     assert_email_allowed(normalized)
     _enforce(limiters["request_ip"], ip, "请求过于频繁")
 
-    previous = db.latest_login_code(normalized)
-    if previous:
-        elapsed = (now - datetime.fromisoformat(previous["created_at"])).total_seconds()
-        if elapsed < cfg.config.code_cooldown_seconds:
-            wait = max(1, round(cfg.config.code_cooldown_seconds - elapsed))
-            raise RateLimitError(f"请求过于频繁，请 {wait} 秒后再试", wait)
-
-    day_ago = to_local_iso(now - timedelta(days=1))
-    if db.count_recent_codes(normalized, day_ago) >= cfg.config.login_code_daily_max:
-        raise RateLimitError(f"该邮箱 24 小时内最多请求 {cfg.config.login_code_daily_max} 次验证码，请稍后再试", 3600)
-
     code = f"{secrets.randbelow(1_000_000):06d}"
-    code_id = db.insert_login_code(
-        normalized,
-        hash_login_code(normalized, code),
-        to_local_iso(now + timedelta(minutes=cfg.config.code_minutes)),
-        to_local_iso(now),
-    )
+    code_hash = hash_login_code(normalized, code)
+    with db.transaction():
+        now = local_now(cfg.config.tz)
+        previous = db.latest_code_request(normalized)
+        if previous:
+            elapsed = (now - datetime.fromisoformat(previous["created_at"])).total_seconds()
+            if elapsed < cfg.config.code_cooldown_seconds:
+                wait = max(1, round(cfg.config.code_cooldown_seconds - elapsed))
+                raise RateLimitError(f"请求过于频繁，请 {wait} 秒后再试", wait)
+
+        day_ago = to_local_iso(now - timedelta(days=1))
+        if db.count_recent_codes(normalized, day_ago) >= cfg.config.login_code_daily_max:
+            raise RateLimitError(
+                f"该邮箱 24 小时内最多请求 {cfg.config.login_code_daily_max} 次验证码，请稍后再试", 3600)
+
+        code_id = db.insert_login_code(
+            normalized, code_hash,
+            to_local_iso(now + timedelta(minutes=cfg.config.code_minutes)), to_local_iso(now),
+        )
 
     try:
         return send_login_code(normalized, code)
     except Exception:
-        db.delete_login_code(code_id)  # 发信失败就撤销，否则用户白等一个冷却周期
+        db.delete_login_code(code_id)  # 发送失败时撤销验证码。
         raise
 
 

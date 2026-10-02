@@ -1,8 +1,4 @@
-"""登录验证码邮件（腾讯云邮件推送 SES）。
-
-配置不全时不发信，把验证码打到日志 —— 本地调试与测试环境都走这条路。
-正文在腾讯云控制台的模板里（变量 {{code}} / {{minutes}}），代码只负责填变量。
-"""
+"""腾讯云模板邮件；未配置时仅提供本地调试验证码。"""
 from __future__ import annotations
 
 import json
@@ -15,6 +11,7 @@ from tencentcloud.ses.v20201002 import models, ses_client
 
 from . import config as cfg
 from .errors import UpstreamError
+from .log import log_event
 
 VERIFICATION_CODE_SUBJECT = "【妙妙道具】登录验证码"
 CREDENTIAL_INVALID_SUBJECT = "【妙妙道具】账号登录异常"
@@ -50,18 +47,18 @@ def _client() -> ses_client.SesClient:
 
 def send_login_code(email: str, code: str) -> dict:
     if not mailer_enabled():
-        print("[mailer] 未配置腾讯云邮件推送 —— 本地调试模式", flush=True)
-        print(f"[mailer] 发给 {email} 的验证码：{code}\n", flush=True)
+        log_event("mail.verification_code_debug", email=email)
+        print(f"[mailer] 本地调试验证码（邮箱已隐藏）：{code}", flush=True)
         return {"sent": False, "dev_code": code}
 
     request = models.SendEmailRequest()
-    request.FromEmailAddress = cfg.config.mail_from          # 别名 + 一个空格 + <地址>
+    request.FromEmailAddress = cfg.config.mail_from
     request.Destination = [email]
     request.Subject = VERIFICATION_CODE_SUBJECT
-    request.TriggerType = 1                                  # 1 = 触发类（验证码），走即时投递通道
+    request.TriggerType = 1  # 触发类邮件，即时投递。
     request.Template = models.Template()
     request.Template.TemplateID = cfg.config.tencent_ses_verification_code_template_id
-    # 变量值必须是字符串：传数字会被腾讯云判为参数错误
+    # 模板变量必须是字符串。
     request.Template.TemplateData = json.dumps(
         {"code": code, "minutes": str(cfg.config.code_minutes)}, ensure_ascii=False
     )
@@ -71,14 +68,14 @@ def send_login_code(email: str, code: str) -> dict:
     except TencentCloudSDKException as error:
         raise UpstreamError("邮件发送失败，请稍后重试") from error
 
-    print(f"[mailer] 已发送验证码邮件 -> {email}（id={response.MessageId}）", flush=True)
+    log_event("mail.verification_code_sent", email=email, message_id=response.MessageId)
     return {"sent": True, "id": response.MessageId}
 
 
 def send_credential_invalid_notice(email: str, username: str) -> dict:
     """通知用户重新提交学校账号密码。"""
     if not credential_invalid_notice_enabled():
-        print(f"[mailer] 未配置账号异常模板，未发送通知 -> {email}", flush=True)
+        log_event("mail.credential_invalid_skipped", email=email, reason="未配置账号异常邮件")
         return {"sent": False}
 
     request = models.SendEmailRequest()
@@ -96,5 +93,5 @@ def send_credential_invalid_notice(email: str, username: str) -> dict:
     except TencentCloudSDKException as error:
         raise UpstreamError("邮件发送失败，请稍后重试") from error
 
-    print(f"[mailer] 已发送账号异常通知 -> {email}（id={response.MessageId}）", flush=True)
+    log_event("mail.credential_invalid_sent", email=email, message_id=response.MessageId)
     return {"sent": True, "id": response.MessageId}

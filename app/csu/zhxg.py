@@ -10,6 +10,7 @@ from urllib.parse import quote
 import requests
 
 from .. import exits
+from ..errors import ExitUnreachableError
 from .cas import UA, cas_login
 from .des import des_encrypt, generate_casual
 
@@ -109,10 +110,30 @@ class ZhxgClient:
         self.exit = self.session.csu_exit
 
     def login(self, username: str, password: str | None = None,
-              before_password_login: Callable[[], None] | None = None) -> str:
-        html = cas_login(self.session, username, password, CAS_CALLBACK,
-                         before_password_login=before_password_login)
+              before_password_login: Callable[[], None] | None = None,
+              before_password_submit: Callable[[], None] | None = None) -> str:
+        try:
+            html = cas_login(self.session, username, password, CAS_CALLBACK,
+                             before_password_login=before_password_login,
+                             before_password_submit=before_password_submit)
+        except requests.exceptions.ConnectionError as error:
+            self._fail_exit(error)
+            raise
         return self._exchange_callback(html)
+
+    def _fail_exit(self, error: requests.exceptions.ConnectionError) -> None:
+        """代理连接失败时冷却出口；直连保留原异常。"""
+        if not self.exit:
+            return
+        exits.mark_unreachable(self.exit)
+        raise ExitUnreachableError() from error
+
+    def _post(self, url: str, **kwargs) -> requests.Response:
+        try:
+            return self.session.post(url, timeout=20, **kwargs)
+        except requests.exceptions.ConnectionError as error:
+            self._fail_exit(error)
+            raise
 
     def _exchange_callback(self, html: str) -> str:
         uid = re.search(r"var\s+uid\s*=\s*'([^']*)'", html) or re.search(r'var\s+uid\s*=\s*"([^"]*)"', html)
@@ -120,7 +141,7 @@ class ZhxgClient:
         if not uid:
             raise ZhxgError("CAS 回调页未返回 uid（可能是 service 不匹配）")
 
-        response = self.session.post(
+        response = self._post(
             f"{API_SYS}/rbac-yh/login-other",
             json={
                 "tyrzpt": "1",
@@ -134,7 +155,6 @@ class ZhxgClient:
                 "content-type": "application/json; charset=utf-8",
                 "deviceType": "4",
             },
-            timeout=20,
         )
         try:
             data = response.json()
@@ -157,11 +177,10 @@ class ZhxgClient:
         }
 
     def post(self, path: str, payload: dict) -> dict:
-        response = self.session.post(
+        response = self._post(
             f"{API_QXJ}{path}",
             data=des_encrypt(payload, self.casual),
             headers=self._headers(),
-            timeout=20,
         )
         try:
             return response.json()

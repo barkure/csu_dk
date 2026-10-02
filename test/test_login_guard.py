@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
+import requests
 
 from app import accounts, checkin, db, ratelimit
 from app import config as cfg
 from app.clock import local_now, to_local_iso
 from app.crypto import encrypt_secret
 from app.csu.cas import CasIpFrozenError
-from app.errors import LoginPausedError, RateLimitError
+from app.csu.zhxg import ZhxgClient
+from app.errors import ExitUnreachableError, LoginPausedError, RateLimitError
 
 USERNAME = "255000999"
 
@@ -42,9 +45,11 @@ class FakeLogin:
     def has_login_cookie(self):
         return False
 
-    def login(self, username, password, before_password_login=None):
+    def login(self, username, password, before_password_login=None, before_password_submit=None):
         if before_password_login:
             before_password_login()
+        if before_password_submit:
+            before_password_submit()
         self.calls += 1
         error = self.errors.pop(0) if self.errors is not None else self.error
         if error is not None:
@@ -247,6 +252,47 @@ def test_retry_storm_is_blocked_without_touching_school(real_login, audit, monke
     assert [event["result"] for event in audit] == ["upstream_error", "login_too_soon"]
 
 
+def test_gap_rejection_does_not_consume_global_login_limit(real_login, audit, monkeypatch):
+    monkeypatch.setattr(checkin, "_global_attempts", ratelimit.SlidingWindow(60_000, 2))
+    monkeypatch.setattr(checkin, "_attempt_gap", ratelimit.SlidingWindow(60_000, 1))
+    client = FakeLogin()
+
+    checkin.cas_login(client, USERNAME, "pw", entry=checkin.ENTRY_CREATE)
+    with pytest.raises(RateLimitError, match="刚提交过"):
+        checkin.cas_login(client, USERNAME, "pw", entry=checkin.ENTRY_CREATE)
+    checkin.cas_login(client, "255100002", "pw", entry=checkin.ENTRY_CREATE)
+
+    assert client.calls == 2
+    assert [event["result"] for event in audit] == ["ok", "login_too_soon", "ok"]
+
+
+def test_cookie_exchange_does_not_consume_global_login_limit(real_login, monkeypatch):
+    monkeypatch.setattr(checkin, "_global_attempts", ratelimit.SlidingWindow(60_000, 1))
+    client = ZhxgClient()
+    client.session.cookies.set("CASTGC", "test-cookie", domain="ca.csu.edu.cn")
+
+    monkeypatch.setattr(client.session, "request", lambda *_args, **_kwargs: SimpleNamespace(
+        text="var uid = 'test-student';",
+        url="https://zhxg.csu.edu.cn/fdcwonsun/caslogin_h5.jsp",
+        json=lambda: {"data": {"token": "business-token"}},
+    ))
+
+    assert checkin.cas_login(client, USERNAME, "pw", entry=checkin.ENTRY_REFRESH) == "business-token"
+    assert checkin.cas_login(FakeLogin(), USERNAME, "pw", entry=checkin.ENTRY_CHECKIN) == "html"
+
+
+def test_failure_before_password_submit_does_not_consume_global_limit(real_login, monkeypatch):
+    monkeypatch.setattr(checkin, "_global_attempts", ratelimit.SlidingWindow(60_000, 1))
+    client = ZhxgClient()
+    monkeypatch.setattr(client.session, "request", lambda *_args, **_kwargs: SimpleNamespace(
+        text="<html>暂时不可用</html>", url="https://ca.csu.edu.cn/authserver/login",
+    ))
+
+    with pytest.raises(RuntimeError, match="未找到 CAS 登录表单"):
+        checkin.cas_login(client, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN)
+    assert checkin.cas_login(FakeLogin(), USERNAME, "pw", entry=checkin.ENTRY_CHECKIN) == "html"
+
+
 def test_scheduled_relogin_is_not_throttled_by_the_gap(real_login, audit, monkeypatch):
     from app.ratelimit import SlidingWindow
 
@@ -375,6 +421,51 @@ def test_both_exits_frozen_then_pauses(real_login, audit, monkeypatch):
     assert [event["result"] for event in audit] == ["ip_frozen", "ip_frozen"]
     assert checkin.login_pause_remaining() > 0  # 所有出口都在冷却，暂停密码登录
     assert audit[-1]["paused_until"]
+
+
+def test_unreachable_exit_switches_and_retries(real_login, audit, monkeypatch):
+    from app import exits
+
+    primary, fallback = "http://127.0.0.1:1091", "http://127.0.0.1:1092"
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
+        update={"outbound_proxies": (primary, fallback)}))
+    exits.reset()
+    client = ZhxgClient()
+    requests_made = []
+
+    def request(session, method, _url, **_kwargs):
+        requests_made.append((session.csu_exit, method))
+        if session.csu_exit == primary:
+            raise requests.exceptions.ConnectionError("Connection reset by peer")
+        return SimpleNamespace(
+            text="var uid = 'test-student';",
+            url="https://zhxg.csu.edu.cn/fdcwonsun/caslogin_h5.jsp",
+            json=lambda: {"data": {"token": "business-token"}},
+        )
+
+    monkeypatch.setattr(requests.Session, "request", request)
+
+    assert checkin.cas_login(client, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN) == "business-token"
+
+    assert requests_made == [(primary, "GET"), (fallback, "GET"), (fallback, "POST")]
+    assert client.exit == fallback
+    assert exits.summary() == {"healthy": 2, "total": 3}
+    assert [event["result"] for event in audit] == ["exit_unreachable", "ok"]
+
+
+def test_unreachable_exit_retries_only_once(real_login, audit, monkeypatch):
+    from app import exits
+
+    exits.reset()
+    error = ExitUnreachableError()
+    client = FakeLogin([error, error, None])
+    client.exit = "http://127.0.0.1:1091"
+
+    with pytest.raises(ExitUnreachableError):
+        checkin.cas_login(client, USERNAME, "pw", entry=checkin.ENTRY_CHECKIN)
+
+    assert client.calls == 2
+    assert [event["result"] for event in audit] == ["exit_unreachable", "exit_unreachable"]
 
 
 def test_failover_retries_only_once(real_login, audit, monkeypatch):

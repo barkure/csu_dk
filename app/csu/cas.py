@@ -102,7 +102,8 @@ def _is_cas_host(url: str) -> bool:
 
 def cas_login(session: requests.Session, username: str, password: str | None,
               service: str, timeout: int = 20,
-              before_password_login: Callable[[], None] | None = None) -> str:
+              before_password_login: Callable[[], None] | None = None,
+              before_password_submit: Callable[[], None] | None = None) -> str:
     """登录 CAS 并返回落地页。"""
     login_url = f"{CAS_BASE}/login?service={requests.utils.quote(service, safe='')}"
 
@@ -124,9 +125,9 @@ def cas_login(session: requests.Session, username: str, password: str | None,
         before_password_login()
 
     if _needs_captcha(session, username, timeout):
-        return _login_with_captcha(session, login_url, username, password, timeout)
+        return _login_with_captcha(session, login_url, username, password, timeout, before_password_submit)
 
-    return _submit_login(session, login_url, first.text, username, password, "", timeout)
+    return _submit_login(session, login_url, first.text, username, password, "", timeout, before_password_submit)
 
 
 def _needs_captcha(session: requests.Session, username: str, timeout: int) -> bool:
@@ -190,7 +191,7 @@ def _keep_evidence(page_html: str, image: bytes | None) -> None:
 
 
 def _login_with_captcha(session: requests.Session, login_url: str, username: str,
-                        password: str, timeout: int) -> str:
+                        password: str, timeout: int, before_password_submit: Callable[[], None] | None) -> str:
     for attempt in range(1, MAX_CAPTCHA_ATTEMPTS + 1):
         page = session.get(login_url, headers={"user-agent": UA}, timeout=timeout)
         frozen = detect_ip_frozen(page.text)
@@ -210,7 +211,8 @@ def _login_with_captcha(session: requests.Session, login_url: str, username: str
             )
 
         try:
-            return _submit_login(session, login_url, page.text, username, password, code, timeout)
+            return _submit_login(session, login_url, page.text, username, password, code, timeout,
+                                 before_password_submit)
         except _CaptchaRejected:
             continue
 
@@ -220,17 +222,21 @@ def _login_with_captcha(session: requests.Session, login_url: str, username: str
 
 
 def _submit_login(session: requests.Session, login_url: str, page_html: str, username: str,
-                  password: str, captcha: str, timeout: int) -> str:
+                  password: str, captcha: str, timeout: int, before_password_submit: Callable[[], None] | None) -> str:
     execution = input_value(page_html, "execution")
     salt = input_value(page_html, "pwdEncryptSalt")
     if not execution or not salt:
         raise RuntimeError("未找到 CAS 登录表单（页面结构可能变了）")
 
+    encrypted = encrypt_password(password, salt)
+    if before_password_submit:
+        before_password_submit()
+
     posted = session.post(
         login_url,
         data={
             "username": username,
-            "password": encrypt_password(password, salt),
+            "password": encrypted,
             "captcha": captcha,
             "execution": execution,
             "_eventId": "submit",

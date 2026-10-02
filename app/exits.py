@@ -50,20 +50,35 @@ def available() -> bool:
         return any(_is_healthy(candidate, now) for candidate in _exits())
 
 
+def _cool_down(candidate: str, now: float) -> str:
+    """已持锁时标记出口冷却。"""
+    candidates = _exits()
+    if candidate not in candidates:
+        candidate = _select(candidates, now)
+    _frozen_until[candidate] = now + cfg.config.ip_freeze_cooldown_seconds
+    return candidate
+
+
 def mark_frozen(frozen: str, reason: str = "") -> str | None:
-    """将指定出口标记为冷却；返回下一个可用出口，没有可用出口时返回 None。"""
+    """冷却被冻结的出口，返回下一个可用出口；无可用出口时返回 None。"""
     with _lock:
-        candidates = _exits()
         now = time.time()
-        if frozen not in candidates:
-            frozen = _select(candidates, now)
-        _frozen_until[frozen] = now + cfg.config.ip_freeze_cooldown_seconds
+        frozen = _cool_down(frozen, now)
+        candidates = _exits()
         switched = _select(candidates, now) if any(
-            _is_healthy(candidate, now) for candidate in candidates) else None
+            _is_healthy(item, now) for item in candidates) else None
     log_event("exit.frozen", level="warning", exit=label(frozen), reason=reason[:120],
               cooldown_seconds=cfg.config.ip_freeze_cooldown_seconds,
               switched_to=label(switched) if switched is not None else "")
     return switched
+
+
+def mark_unreachable(broken: str) -> None:
+    """冷却连接失败的出口，不推进轮询。"""
+    with _lock:
+        broken = _cool_down(broken, time.time())
+    log_event("exit.unreachable", level="warning", exit=label(broken),
+              cooldown_seconds=cfg.config.ip_freeze_cooldown_seconds)
 
 
 def reset() -> None:

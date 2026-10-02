@@ -85,7 +85,8 @@ def test_valid_cookie_does_not_consume_password_login_limit():
                           first_url="https://zhxg.csu.edu.cn/callback")
 
     assert cas.cas_login(session, "255000001", "pw", "svc",
-                         before_password_login=lambda: checked.append(True)) == LANDING
+                         before_password_login=lambda: checked.append("login"),
+                         before_password_submit=lambda: checked.append("submit")) == LANDING
     assert checked == []
 
 
@@ -146,12 +147,38 @@ def test_wrong_captcha_retries_then_gives_up(monkeypatch):
 
 def test_second_attempt_succeeds(monkeypatch):
     monkeypatch.setattr(cas.ocr, "solve", lambda _image: "bbbbbb")
+    calls = []
 
     session = FakeSession(need_captcha=True, login_pages=[PAGE],
                           posts=[FakeResponse(text=CAPTCHA_TIP),
                                  FakeResponse(text=LANDING, url="https://zhxg.csu.edu.cn/home")])
-    assert cas.cas_login(session, "255000001", "pw", "svc") == LANDING
+    assert cas.cas_login(session, "255000001", "pw", "svc",
+                         before_password_login=lambda: calls.append("login"),
+                         before_password_submit=lambda: calls.append("submit")) == LANDING
     assert len(session.posted) == 2
+    assert calls == ["login", "submit", "submit"]
+
+
+def test_captcha_retry_obeys_global_password_limit(real_login, monkeypatch):
+    from app import checkin
+    from app.csu.zhxg import ZhxgClient
+    from app.errors import RateLimitError
+    from app.ratelimit import SlidingWindow
+
+    monkeypatch.setattr(checkin, "_global_attempts", SlidingWindow(60_000, 1))
+    monkeypatch.setattr(checkin, "_attempt_gap", SlidingWindow(60_000, 1))
+    monkeypatch.setattr(cas.ocr, "solve", lambda _image: "bbbbbb")
+    monkeypatch.setattr(cas, "_keep_evidence", lambda *_args: None)
+    session = FakeSession(need_captcha=True, login_pages=[PAGE],
+                          posts=[FakeResponse(text=CAPTCHA_TIP)])
+    client = ZhxgClient(session=session)
+    monkeypatch.setattr(client, "has_login_cookie", lambda: False)
+
+    with pytest.raises(RateLimitError, match="登录请求太密集"):
+        checkin.cas_login(client, "255000001", "pw", entry=checkin.ENTRY_CREATE)
+
+    assert len(session.posted) == 1
+    assert session.image_hits == 2
 
 
 def test_no_ocr_never_submits_a_blank_captcha(monkeypatch):

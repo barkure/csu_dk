@@ -57,6 +57,15 @@ def _reset_login_state():
 
 
 @pytest.fixture(autouse=True)
+def _reset_credential_notices():
+    from app import db
+
+    db._exec("DELETE FROM credential_notices")
+    yield
+    db._exec("DELETE FROM credential_notices")
+
+
+@pytest.fixture(autouse=True)
 def _clean_learned_buildings():
     from app import buildings
 

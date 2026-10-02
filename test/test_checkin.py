@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,7 @@ from app import checkin, db
 from app import config as cfg
 from app.clock import local_now, to_local_iso
 from app.crypto import encrypt_secret
+from app.errors import AppError, ExitUnreachableError
 
 _counter = iter(range(1, 1000))
 
@@ -45,6 +47,56 @@ def test_has_fresh_login_rules(user):
     assert checkin.has_fresh_login(future) is False  # 时间戳在未来 → 保守重登
 
     assert checkin.has_fresh_login({"token": None, "token_at": None}) is False
+
+
+@pytest.mark.parametrize("operation", ["checkin", "refresh", "relogin", "verification"])
+def test_deleted_account_is_rejected_before_network_calls(user, monkeypatch, operation):
+    account = make_account(user["id"])
+    db.delete_account(user["id"], account["id"])
+    monkeypatch.setattr(checkin, "build_client", lambda *_args: pytest.fail("已删除的账号不能请求学校"))
+    operations = {
+        "checkin": lambda: checkin.run_checkin(account, "manual"),
+        "refresh": lambda: checkin.refresh_login(account),
+        "relogin": lambda: checkin.relogin(account),
+        "verification": lambda: checkin.resolve_verification(account),
+    }
+
+    with pytest.raises(AppError, match="账号不存在") as caught:
+        operations[operation]()
+
+    assert caught.value.status == 404
+    assert db.list_records(account["id"]) == []
+
+
+@pytest.mark.parametrize("invalid_json", [False, True])
+def test_temporary_token_failure_can_be_refreshed_again(user, real_login, monkeypatch, invalid_json):
+    from app.csu.zhxg import ZhxgClient
+
+    account = make_account(user["id"])
+    client = ZhxgClient()
+    responses = iter([
+        ValueError("not json") if invalid_json else {"code": "500", "message": "学校服务暂时不可用"},
+        {"data": {"token": "recovered-token"}},
+    ])
+
+    def json_response():
+        value = next(responses)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(checkin, "build_client", lambda _account: client)
+    monkeypatch.setattr("app.csu.zhxg.cas_login", lambda *_args, **_kwargs: "var uid = 'test-student';")
+    monkeypatch.setattr(client, "_post", lambda *_args, **_kwargs: SimpleNamespace(json=json_response))
+
+    assert checkin.refresh_login(account)["ok"] is False
+    saved = db.get_account_by_id(account["id"])
+    assert saved["auth_error"] == ""
+    assert saved["enabled"] == 1
+    assert account["id"] in {item["id"] for item in db.all_enabled_accounts()}
+
+    assert checkin.refresh_login(saved)["ok"] is True
+    assert db.get_account_by_id(account["id"])["token"] == "recovered-token"
 
 
 @pytest.mark.parametrize("per_tick", [2, 6])
@@ -345,6 +397,67 @@ def test_engine_skipped_when_already_checked_in(user, monkeypatch):
     assert result["status"] == "skipped"
     assert "今日已打卡" in result["message"]
     assert db.list_records(account["id"], 1)[0]["status"] == "skipped"
+
+
+@pytest.mark.parametrize("phase", ["status", "location", "base", "jitter"])
+def test_engine_retries_exit_failure_before_submit(user, monkeypatch, phase):
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
+        update={"outbound_proxies": ("http://127.0.0.1:1091",)}))
+    first = EngineClient({"sfydk": 0, "kdk": True}, location={"canDk": True})
+    second = EngineClient({"sfydk": 1, "dksj": "2026-09-12 20:18:43"})
+    account = engine_account(user, monkeypatch, first, dkdz="升华8栋" if phase == "jitter" else "")
+    calls = []
+
+    def build_client(_account):
+        client = [first, second][len(calls)]
+        calls.append(client)
+        return client
+
+    def unavailable(*_args, **_kwargs):
+        raise ExitUnreachableError()
+
+    def location_failed(*_args, **_kwargs):
+        raise RuntimeError("定位失败")
+
+    monkeypatch.setattr(checkin, "build_client", build_client)
+    if phase == "status":
+        monkeypatch.setattr(first, "dk_status", unavailable)
+    elif phase == "location":
+        monkeypatch.setattr(checkin.buildings, "for_student", unavailable)
+    elif phase == "base":
+        monkeypatch.setattr(checkin.buildings, "for_student", location_failed)
+        monkeypatch.setattr(checkin.buildings, "verdict", unavailable)
+    else:
+        monkeypatch.setattr(cfg.config, "checkin_jitter_meters", 50)
+        monkeypatch.setattr(checkin.buildings, "verdict", unavailable)
+
+    result = engine_status(account)
+
+    assert result["status"] == "skipped"
+    assert calls == [first, second]
+    assert first.submitted is None
+    assert [record["status"] for record in db.list_records(account["id"])] == ["skipped"]
+
+
+def test_engine_bounds_exit_retries(user, monkeypatch):
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
+        update={"outbound_proxies": ("http://127.0.0.1:1091",)}))
+    calls = []
+
+    class DeadExitClient(EngineClient):
+        def dk_status(self, dklb="PA"):
+            calls.append(1)
+            raise ExitUnreachableError()
+
+    account = engine_account(user, monkeypatch,
+                             DeadExitClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"}))
+
+    result = engine_status(account)
+
+    assert result["status"] == "failed"
+    assert len(calls) == 2
+    assert result["message"] == "网络出口重试失败，请稍后重试"
+    assert len(db.list_records(account["id"])) == 1
 
 
 def test_engine_waiting_before_window(user, monkeypatch):
@@ -820,18 +933,24 @@ def test_verification_read_error_is_deferred(user, monkeypatch):
     assert db.get_verification(account["id"]) is not None
 
 
-def test_submit_timeout_is_deferred(user, monkeypatch):
+@pytest.mark.parametrize("error", [TimeoutError("Read timed out"), ExitUnreachableError()])
+def test_submit_connection_failure_is_deferred(user, monkeypatch, error):
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
+        update={"outbound_proxies": ("http://127.0.0.1:1091",)}))
     client = EngineClient({"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"},
                           location={"canDk": True, "yxMc": "升华8栋", "pcMi": 12})
     account = engine_account(user, monkeypatch, client, dkdz="升华8栋")
+    calls = []
 
     def submit_dk(**_kwargs):
-        raise TimeoutError("HTTPSConnectionPool: Read timed out")
+        calls.append(1)
+        raise error
 
     client.submit_dk = submit_dk
     result = engine_status(account)
 
     assert result["deferred"] is True
+    assert len(calls) == 1
     assert db.list_records(account["id"]) == []
     assert db.get_verification(account["id"]) is not None
 

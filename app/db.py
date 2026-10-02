@@ -42,7 +42,7 @@ def transaction() -> Iterator[None]:
 
 
 _SCHEMA = (pathlib.Path(__file__).with_name("schema.sql")).read_text()
-_ADDITIVE_TABLES = frozenset({"verifications"})
+_ADDITIVE_TABLES = frozenset({"verifications", "credential_notices"})
 
 
 def _structure(conn: sqlite3.Connection) -> dict[str, set[str]]:
@@ -180,6 +180,10 @@ def latest_login_code(email: str) -> dict | None:
     return _one("SELECT * FROM login_codes WHERE email = ? AND used = 0 ORDER BY id DESC LIMIT 1", (email,))
 
 
+def latest_code_request(email: str) -> dict | None:
+    return _one("SELECT created_at FROM login_codes WHERE email = ? ORDER BY id DESC LIMIT 1", (email,))
+
+
 def bump_code_attempts(code_id: int) -> None:
     _exec("UPDATE login_codes SET attempts = attempts + 1 WHERE id = ?", (code_id,))
 
@@ -241,6 +245,12 @@ def get_verification(account_id: int) -> dict | None:
     return _one("SELECT * FROM verifications WHERE account_id = ?", (account_id,))
 
 
+def verifying_accounts(user_id: int) -> set[int]:
+    return {row["account_id"] for row in _all(
+        """SELECT v.account_id FROM verifications v
+           JOIN accounts a ON a.id = v.account_id WHERE a.user_id = ?""", (user_id,))}
+
+
 def due_verifications(now_iso: str, limit: int) -> list[dict]:
     return _all("SELECT * FROM verifications WHERE next_at <= ? ORDER BY next_at LIMIT ?",
                 (now_iso, limit))
@@ -261,6 +271,29 @@ def purge_verifications(cutoff_iso: str) -> int:
 
 def clear_verifications() -> int:
     return _exec("DELETE FROM verifications").rowcount
+
+
+def queue_credential_notice(account_id: int, next_at: str) -> None:
+    _exec("""INSERT INTO credential_notices (account_id, next_at) VALUES (?, ?)
+             ON CONFLICT(account_id) DO NOTHING""", (account_id, next_at))
+
+
+def get_credential_notice(account_id: int) -> dict | None:
+    return _one("SELECT * FROM credential_notices WHERE account_id = ?", (account_id,))
+
+
+def due_credential_notices(now: str, max_attempts: int, limit: int) -> list[dict]:
+    return _all("""SELECT * FROM credential_notices WHERE next_at <= ? AND attempts < ?
+                   ORDER BY next_at, account_id LIMIT ?""", (now, max_attempts, limit))
+
+
+def attempt_credential_notice(account_id: int, next_at: str) -> None:
+    _exec("UPDATE credential_notices SET attempts = attempts + 1, next_at = ? WHERE account_id = ?",
+          (next_at, account_id))
+
+
+def delete_credential_notice(account_id: int) -> None:
+    _exec("DELETE FROM credential_notices WHERE account_id = ?", (account_id,))
 
 
 def count_accounts(user_id: int) -> int:
@@ -330,11 +363,14 @@ def all_accounts_raw() -> list[dict]:
 def set_auth_error(account_id: int, kind: AuthError | str) -> bool:
     """记录或清除账号的认证故障。"""
     kind = AuthError(kind)
-    cursor = _exec(
-        """UPDATE accounts SET auth_error = ?, updated_at = ?
-            WHERE id = ?""",
-        (kind, now_iso(), account_id),
-    )
+    with transaction():
+        cursor = _exec(
+            """UPDATE accounts SET auth_error = ?, updated_at = ?
+                WHERE id = ?""",
+            (kind, now_iso(), account_id),
+        )
+        if kind != AuthError.BAD_CREDENTIALS:
+            delete_credential_notice(account_id)
     return cursor.rowcount > 0
 
 
@@ -363,7 +399,10 @@ def update_account(account_id: int, fields: dict) -> None:
     assignments = ", ".join(f"{key} = :{key}" for key in keys)
     params = {key: sealed[key] for key in keys}
     params["id"] = account_id
-    _exec(f"UPDATE accounts SET {assignments} WHERE id = :id", params)
+    with transaction():
+        _exec(f"UPDATE accounts SET {assignments} WHERE id = :id", params)
+        if "auth_error" in fields and fields["auth_error"] != AuthError.BAD_CREDENTIALS:
+            delete_credential_notice(account_id)
 
 
 def delete_account(user_id: int, account_id: int) -> bool:

@@ -58,6 +58,16 @@ class LoginPausedError(AppError):
         self.retry_after_sec = retry_after_sec
 
 
+class ExitUnreachableError(AppError):
+    """代理出口连接失败。"""
+
+    status = 502
+    code = "exit_unreachable"
+
+    def __init__(self):
+        super().__init__("网络出口暂时不可用，请稍后重试")
+
+
 class MasterKeyMissingError(AppError):
     code = "master_key_missing"
 

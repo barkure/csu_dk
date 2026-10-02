@@ -19,12 +19,14 @@ from .checkin import (
     refresh_login,
     resolve_verification,
     run_checkin,
-    scrub_detail,
     sweep_login_state,
 )
 from .clock import local_now, parse_local, to_local_iso
-from .domain import CheckinStatus, Trigger
+from .domain import DAY_SETTLED, Trigger
+from .errors import AppError
 from .log import log_event
+from .notifications import retry_credential_notices
+from .redaction import scrub_detail
 from .validate import to_minutes
 
 MAX_ATTEMPTS_PER_DAY = 3
@@ -42,9 +44,7 @@ def lease_stale_seconds() -> int:
 
 
 def _done_in_window(account: dict, start: datetime, end: datetime) -> bool:
-    if account.get("last_status") not in (
-        CheckinStatus.SUCCESS, CheckinStatus.SKIPPED, CheckinStatus.NO_TASK,
-    ):
+    if account.get("last_status") not in DAY_SETTLED:
         return False
     last_run = account.get("last_run_at")
     return bool(last_run) and start <= parse_local(last_run) <= end
@@ -95,7 +95,12 @@ def run_batch(trigger: Trigger | str = Trigger.SCHEDULE, force: bool = False,
     take = len(ready) if force else min(cfg.config.checkin_per_tick, len(ready))
     picked = random.sample(ready, take) if take else []
     for account in picked:
-        result = run_checkin(account, trigger)
+        try:
+            result = run_checkin(account, trigger)
+        except AppError as error:
+            if error.status != 404:
+                raise
+            continue
         if result.get("deferred"):
             continue
         results.append((account, result))
@@ -110,10 +115,15 @@ def run_verifications() -> list[tuple[dict, dict]]:
     results = []
     for task in pending_verifications(cfg.config.checkin_per_tick):
         account = db.get_account_by_id(task["account_id"])
-        if not account or not account.get("enabled"):
+        if not account:
             forget_verification(task["account_id"])
             continue
-        result = resolve_verification(account)
+        try:
+            result = resolve_verification(account)
+        except AppError as error:
+            if error.status != 404:
+                raise
+            continue
         if result:
             results.append((account, result))
     return results
@@ -134,7 +144,12 @@ def refresh_logins(accounts: list[dict] | None = None,
         return []
     results = []
     for account in random.sample(ready, min(limit, len(ready))):
-        result = refresh_login(account)
+        try:
+            result = refresh_login(account)
+        except AppError as error:
+            if error.status != 404:
+                raise
+            continue
         if result.get("deferred"):
             break
         log_event("login.refresh", account_id=account["id"], ok=result.get("ok"),
@@ -184,6 +199,7 @@ def tick() -> None:
         run_batch()
     else:
         refresh_logins()
+    retry_credential_notices()
 
 
 def start_scheduler() -> BackgroundScheduler | None:

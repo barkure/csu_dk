@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS scheduler_lease (
   owner        TEXT NOT NULL,
   heartbeat_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS credential_notices (
+  account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  next_at    TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash  TEXT PRIMARY KEY,
   user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

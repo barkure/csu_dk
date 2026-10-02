@@ -68,6 +68,83 @@ def test_wrong_code_does_not_consume_and_counts_attempt():
     assert row["used"] == 0 and row["attempts"] == 1     # 错码不消耗，只计一次尝试
 
 
+def test_concurrent_code_requests_share_email_cooldown(monkeypatch):
+    email = "request-race@example.com"
+    sent = []
+    monkeypatch.setattr(auth, "send_login_code", lambda address, code: sent.append((address, code)) or {"sent": True})
+
+    def request(index):
+        try:
+            return auth.request_login_code(email, f"192.0.2.{index + 1}")
+        except RateLimitError:
+            return None
+
+    results = run_concurrently(6, request)
+    assert sum(result is not None for result in results) == 1
+    assert len(sent) == 1
+    assert db.count_recent_codes(email, "2000-01-01T00:00:00") == 1
+
+
+def test_consuming_code_does_not_reset_request_cooldown(monkeypatch):
+    email = "consumed-cooldown@example.com"
+    monkeypatch.setattr(auth, "send_login_code", lambda *_args: {"sent": True})
+    auth.request_login_code(email, "192.0.2.20")
+    row = db.latest_login_code(email)
+    assert db.consume_login_code(row["id"], auth.MAX_CODE_ATTEMPTS)
+
+    with pytest.raises(RateLimitError):
+        auth.request_login_code(email, "192.0.2.21")
+    assert db.count_recent_codes(email, "2000-01-01T00:00:00") == 1
+
+
+def test_email_daily_quota_includes_used_codes(monkeypatch):
+    email = "daily-quota@example.com"
+    monkeypatch.setattr(cfg.config, "login_code_daily_max", 1)
+    now = local_now(cfg.config.tz)
+    code_id = db.insert_login_code(email, "used-hash", to_local_iso(now), to_local_iso(now - timedelta(hours=1)))
+    assert db.consume_login_code(code_id, auth.MAX_CODE_ATTEMPTS)
+    sent = []
+    monkeypatch.setattr(auth, "send_login_code", lambda *_args: sent.append(True))
+
+    with pytest.raises(RateLimitError, match="24 小时内最多请求 1 次"):
+        auth.request_login_code(email, "192.0.2.22")
+    assert sent == []
+
+
+def test_sending_code_does_not_hold_database_transaction(monkeypatch):
+    email = "mail-outside-transaction@example.com"
+    finished = threading.Event()
+
+    def send(*_args):
+        def read_database():
+            db.latest_code_request(email)
+            finished.set()
+
+        thread = threading.Thread(target=read_database, daemon=True)
+        thread.start()
+        assert finished.wait(2), "发信期间其他请求应能访问数据库"
+        thread.join(timeout=2)
+        return {"sent": True}
+
+    monkeypatch.setattr(auth, "send_login_code", send)
+    assert auth.request_login_code(email, "192.0.2.23") == {"sent": True}
+
+
+def test_failed_mail_does_not_consume_email_quota(monkeypatch):
+    email = "failed-mail-quota@example.com"
+
+    def fail(*_args):
+        raise RuntimeError("发送失败")
+
+    monkeypatch.setattr(auth, "send_login_code", fail)
+    with pytest.raises(RuntimeError, match="发送失败"):
+        auth.request_login_code(email, "192.0.2.24")
+    assert db.latest_code_request(email) is None
+
+    monkeypatch.setattr(auth, "send_login_code", lambda *_args: {"sent": True})
+    assert auth.request_login_code(email, "192.0.2.25") == {"sent": True}
+
+
 def test_account_quota_cannot_be_exceeded_concurrently(monkeypatch):
     user = db.upsert_user("quota-race@example.com", to_local_iso(local_now(cfg.config.tz)))
     monkeypatch.setattr("app.config.config", cfg.config.model_copy(update={"max_accounts_per_user": 3}))

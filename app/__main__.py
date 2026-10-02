@@ -1,7 +1,6 @@
 """命令行入口。"""
 from __future__ import annotations
 
-import socket
 import sys
 
 COMMANDS = ("all", "db-init", "db-check")
@@ -10,34 +9,22 @@ USAGE = """用法：python -m app [子命令]
 
   db-init                 按最新结构建库（已存在则只核对结构）
   db-check                核对当前库结构
+  -h, --help              显示帮助
   不带子命令                启动服务（HTTP + 调度器同进程）
 """
-
-
-def _lan_ip() -> str | None:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect(("192.168.1.1", 80))
-        return sock.getsockname()[0]
-    except OSError:
-        return None
-    finally:
-        sock.close()
 
 
 def _banner() -> None:
     from . import config as cfg
 
-    lan = _lan_ip()
+    host = f"[{cfg.config.host}]" if ":" in cfg.config.host else cfg.config.host
     print("\n" + "=" * 64)
     print("  中南大学妙妙道具服务端（Python + FastAPI）")
     print("=" * 64)
     print(f"  数据目录   : {cfg.DATA_DIR}")
     print(f"  数据库     : {cfg.DB_PATH}")
     print(f"  时区       : {cfg.config.tz}")
-    print(f"  本机访问   : http://127.0.0.1:{cfg.config.port}/   ← 功能齐全（含定位）")
-    if lan and cfg.config.host not in ("127.0.0.1", "localhost"):
-        print(f"  局域网访问 : http://{lan}:{cfg.config.port}/   ← 手机/平板可用，但定位按钮不可用")
+    print(f"  监听地址   : http://{host}:{cfg.config.port}/")
     print("=" * 64 + "\n")
 
 
@@ -56,7 +43,7 @@ def _run() -> None:
                 log_level="warning", **options)
 
 
-def _run_db(command: str, argv: list[str]) -> int:
+def _run_db(command: str) -> int:
     from . import config as cfg
 
     try:
@@ -84,13 +71,16 @@ def _run_db(command: str, argv: list[str]) -> int:
 
 def main() -> None:
     argv = sys.argv[1:]
-    command = argv[0] if argv and not argv[0].startswith("-") else "all"
-    if command not in COMMANDS:
+    if argv in (["-h"], ["--help"]):
+        print(USAGE)
+        return
+    command = argv[0] if argv else "all"
+    if len(argv) > 1 or command not in COMMANDS:
         print(USAGE, file=sys.stderr)
         raise SystemExit(2)
 
     if command.startswith("db-"):
-        raise SystemExit(_run_db(command, argv))
+        raise SystemExit(_run_db(command))
 
     _run()
 

@@ -234,9 +234,9 @@ def test_ip_freeze_is_not_an_account_failure():
     assert checkin._failure_kind(error, str(error)) is None
 
 
-def test_local_crypto_and_zhxg_errors_are_other():
+def test_local_crypto_failure_is_persistent_but_upstream_failure_is_temporary():
     assert checkin._failure_kind(SecretDecryptError("x"), "x") == "other"
-    assert checkin._failure_kind(ZhxgError("换取业务 token 失败"), "换取业务 token 失败") == "other"
+    assert checkin._failure_kind(ZhxgError("换取业务 token 失败"), "换取业务 token 失败") is None
 
 
 def test_checkin_stage_failure_does_not_touch_status(user, monkeypatch):
@@ -283,7 +283,7 @@ def test_failure_log_has_no_secrets(monkeypatch):
 def test_bad_credentials_notifies_once_per_failure(user, monkeypatch):
     account = make_account(user["id"], username="999111916")
     sent = []
-    monkeypatch.setattr("app.checkin.send_credential_invalid_notice",
+    monkeypatch.setattr("app.notifications.send_credential_invalid_notice",
                         lambda email, username: sent.append((email, username)) or {"sent": True})
 
     error = RuntimeError("学号或密码错误")
@@ -305,7 +305,7 @@ def _stub_verify(monkeypatch):
 
 def test_bad_credentials_disables_auto_checkin(user, monkeypatch):
     account = make_account(user["id"])
-    monkeypatch.setattr("app.checkin.send_credential_invalid_notice", lambda *_a: {"sent": True})
+    monkeypatch.setattr("app.notifications.send_credential_invalid_notice", lambda *_a: {"sent": True})
     events = []
     monkeypatch.setattr("app.log.log_event", lambda event, **fields: events.append((event, fields)))
 
@@ -323,7 +323,7 @@ def test_bad_credentials_disables_auto_checkin(user, monkeypatch):
 
 def test_bad_credentials_leaves_an_already_disabled_account_alone(user, monkeypatch):
     account = make_account(user["id"], enabled=0)
-    monkeypatch.setattr("app.checkin.send_credential_invalid_notice", lambda *_a: {"sent": True})
+    monkeypatch.setattr("app.notifications.send_credential_invalid_notice", lambda *_a: {"sent": True})
     events = []
     monkeypatch.setattr("app.log.log_event", lambda event, **fields: events.append((event, fields)))
 
@@ -402,8 +402,8 @@ def test_credential_invalid_notice_failure_does_not_hide_account_failure(user, m
         raise RuntimeError("邮件服务不可用")
 
     events = []
-    monkeypatch.setattr("app.checkin.send_credential_invalid_notice", fail)
-    monkeypatch.setattr("app.checkin.log_event",
+    monkeypatch.setattr("app.notifications.send_credential_invalid_notice", fail)
+    monkeypatch.setattr("app.notifications.log_event",
                         lambda event, **fields: events.append((event, fields)))
 
     checkin.mark_auth_failure(account["id"], RuntimeError("学号或密码错误"), "学号或密码错误")

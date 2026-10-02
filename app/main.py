@@ -13,13 +13,14 @@ from pydantic import BaseModel
 from . import accounts as accounts_service
 from . import auth, db, exits, netinfo, ui
 from . import config as cfg
-from .checkin import has_fresh_login, relogin, run_checkin, scrub_detail, scrub_optional
+from .checkin import has_fresh_login, is_verifying, relogin, run_checkin
 from .clock import local_now, to_local_iso
 from .domain import Trigger
 from .errors import AppError, RateLimitError, friendly_message
 from .log import log_event
 from .mailer import mailer_enabled
 from .middleware import BodyLimitMiddleware, SecurityHeadersMiddleware
+from .redaction import scrub_detail, scrub_optional
 from .scheduler import start_scheduler, stop_scheduler
 from .startup import run_startup_checks
 
@@ -71,6 +72,7 @@ def _public_account(account: dict) -> dict:
         "needsReauth": bool(account["auth_error"]),
         "dkdz": account["dkdz"] or "",
         "online": has_fresh_login(account),
+        "verifying": is_verifying(account["id"]),
         "lastRunAt": account["last_run_at"],
         "lastStatus": account["last_status"],
         "lastMessage": scrub_optional(account["last_message"]),
@@ -98,7 +100,7 @@ async def lifespan(_app: FastAPI):
 
 class AppWithSecurityHeaders(FastAPI):
     def build_middleware_stack(self):
-        """响应头包装要盖住 ServerErrorMiddleware 的兜底 500，故套在整条栈最外层。"""
+        """为所有响应添加安全头，包括未捕获异常产生的 500。"""
         return SecurityHeadersMiddleware(super().build_middleware_stack())
 
 

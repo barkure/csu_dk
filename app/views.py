@@ -53,8 +53,10 @@ def window_passed() -> bool:
     return window_state() == "after"
 
 
-def today_result(account: dict) -> dict:
+def today_result(account: dict, *, verifying: bool = False) -> dict:
     """返回账号的今日结果。"""
+    if verifying:
+        return {"label": "等待确认", "cls": ""}
     today = _now()[0][:10]
     fresh = bool(account.get("last_status")) and str(account.get("last_run_at") or "")[:10] == today
     if not fresh:
@@ -88,9 +90,9 @@ def account_status(account: dict) -> dict:
     return {"text": text, "cls": cls}
 
 
-def account_view(account: dict) -> dict:
+def account_view(account: dict, *, verifying: bool = False) -> dict:
     return {
         "raw": account,
         "status": account_status(account),
-        "today": today_result(account),
+        "today": today_result(account, verifying=verifying),
     }

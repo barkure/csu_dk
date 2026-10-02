@@ -22,6 +22,9 @@ class CheckinStatus(StrEnum):
     FAILED = "failed"
 
 
+DAY_SETTLED = frozenset({CheckinStatus.SUCCESS, CheckinStatus.SKIPPED, CheckinStatus.NO_TASK})
+
+
 class Trigger(StrEnum):
     SCHEDULE = "schedule"
     MANUAL = "manual"

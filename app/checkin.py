@@ -1,7 +1,6 @@
 """打卡引擎：登录态维护 + 执行一次打卡。"""
 from __future__ import annotations
 
-import re
 import threading
 import time
 from datetime import timedelta
@@ -15,8 +14,10 @@ from .crypto import decrypt_secret
 from .csu.cas import CasIpFrozenError
 from .csu.cas import classify_error as classify_cas_error
 from .csu.zhxg import ZhxgClient, ZhxgError
-from .domain import AccountRow, AuthError, CheckinResult, CheckinStatus, Trigger
+from .domain import DAY_SETTLED, AccountRow, AuthError, CheckinResult, CheckinStatus, Trigger
 from .errors import (
+    AppError,
+    ExitUnreachableError,
     LoginPausedError,
     MasterKeyInvalidError,
     MasterKeyMissingError,
@@ -25,8 +26,9 @@ from .errors import (
 )
 from .locks import lock_for
 from .log import log_account_enabled_changed, log_event
-from .mailer import send_credential_invalid_notice
+from .notifications import send_credential_notice
 from .ratelimit import FailureCooldown, SlidingWindow
+from .redaction import scrub_detail
 
 _login_paused_until = 0.0
 _cas_gate = threading.Semaphore(cfg.config.cas_concurrency)
@@ -45,8 +47,6 @@ _CREDENTIAL_ERRORS = (SecretDecryptError, MasterKeyMissingError, MasterKeyInvali
 OK_CODE = "200"
 NO_TASK_CODE = "331"
 BUSINESS_CODES = frozenset({OK_CODE, NO_TASK_CODE})
-
-DAY_SETTLED = frozenset({CheckinStatus.SUCCESS, CheckinStatus.SKIPPED, CheckinStatus.NO_TASK})
 
 VERIFY_RECHECK_SEC = 30.0
 VERIFY_MAX_ROUNDS = 3
@@ -196,13 +196,6 @@ def cas_login(client: ZhxgClient, username: str, password: str | None, *,
                          account_id=account_id, ip=ip)
             raise RateLimitError(f"密码连续输错，请 {blocked} 秒后再试", blocked)
 
-        if _global_attempts is not None:
-            burst = _global_attempts.take("cas")
-            if not burst.ok:
-                _audit_login(entry, "login_rate_limited", username=username, user_id=user_id,
-                             account_id=account_id, ip=ip)
-                raise RateLimitError(f"登录请求太密集，请 {burst.retry_after_sec} 秒后再试",
-                                     burst.retry_after_sec)
         if _attempt_gap is not None and entry in USER_ENTRIES and not failover_retry:
             gap = _attempt_gap.take(username)
             if not gap.ok:
@@ -212,13 +205,23 @@ def cas_login(client: ZhxgClient, username: str, password: str | None, *,
                                      gap.retry_after_sec)
         password_login_checked = True
 
+    def before_password_submit() -> None:
+        if _global_attempts is not None:
+            burst = _global_attempts.take("cas")
+            if not burst.ok:
+                _audit_login(entry, "login_rate_limited", username=username, user_id=user_id,
+                             account_id=account_id, ip=ip)
+                raise RateLimitError(f"登录请求太密集，请 {burst.retry_after_sec} 秒后再试",
+                                     burst.retry_after_sec)
+
     with _cas_gate:
         while True:
             password_login_checked = False
             try:
                 if not client.has_login_cookie():
                     before_password_login()
-                html = client.login(username, password, before_password_login=before_password_login)
+                html = client.login(username, password, before_password_login=before_password_login,
+                                    before_password_submit=before_password_submit)
             except (LoginPausedError, RateLimitError):
                 raise
             except CasIpFrozenError as error:
@@ -232,8 +235,17 @@ def cas_login(client: ZhxgClient, username: str, password: str | None, *,
                 client.switch_exit(switched)
                 failover_retry = True
                 continue
+            except ExitUnreachableError:
+                # 客户端已冷却故障出口，此处最多换出口重试一次。
+                _audit_login(entry, "exit_unreachable", username=username, user_id=user_id,
+                             account_id=account_id, ip=ip)
+                if not exits.available() or failover_retry:
+                    raise
+                client.switch_exit()
+                failover_retry = True
+                continue
             except Exception as error:
-                if _is_credential_rejection(str(error)):
+                if not isinstance(error, ZhxgError) and _is_credential_rejection(str(error)):
                     count = _guard_record_failure(username, user_id, ip)
                     _audit_login(entry, "bad_credentials", username=username, user_id=user_id,
                                  account_id=account_id, ip=ip, fail_count=count)
@@ -286,39 +298,11 @@ _CAS_FAILURE_KINDS = {
 
 def _failure_kind(error: Exception, message: str) -> AuthError | None:
     """返回账号认证故障；临时错误返回 None。"""
-    if isinstance(error, CasIpFrozenError):
+    if isinstance(error, (CasIpFrozenError, ZhxgError)):
         return None
     if isinstance(error, _CREDENTIAL_ERRORS):
         return AuthError.OTHER
-    if isinstance(error, ZhxgError):
-        return AuthError.OTHER
     return _CAS_FAILURE_KINDS.get(classify_cas_error(message) or "")
-
-
-_SECRET_KEYS = r"CASTGC|JSESSIONID|authorization|token|password|passwd|pwd|cookies?|secret|casual"
-_QUOTABLE_KEYS = rf"(?:{_SECRET_KEYS}|set-cookie)"
-_SECRET_IN_TEXT = re.compile(
-    r"eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}"
-    r"|[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{10,}"
-    r"|v1\.[A-Za-z0-9+/=_\-.]{8,}"
-    r"|(?i:bearer)\s+[A-Za-z0-9._\-]+"
-    rf"|[\"']?(?:{_QUOTABLE_KEYS})[\"']?\s*[=:]\s*\"(?:[^\"\\]|\\.)*\""
-    rf"|[\"']?(?:{_QUOTABLE_KEYS})[\"']?\s*[=:]\s*'(?:[^'\\]|\\.)*'"
-    r"|[\"']?(?:set-cookie|castgc|jsessionid|cookies?|authorization)[\"']?\s*[=:]\s*[^,，。)\n]+"
-    rf"|[\"']?(?:{_SECRET_KEYS})[\"']?\s*[=:]\s*[\"']?[^\s\"'&,，。;；)\n]+"
-    r"|(?<=[?&])[A-Za-z0-9_]+=[^\s&,，。;；]+",
-    re.IGNORECASE,
-)
-_DETAIL_LIMIT = 160
-
-
-def scrub_detail(detail: str) -> str:
-    return _SECRET_IN_TEXT.sub("***", str(detail or ""))[:_DETAIL_LIMIT]
-
-
-def scrub_optional(detail: str | None) -> str | None:
-    """读取侧脱敏：None 原样保留，其余同 scrub_detail（覆盖旧库存量文本）。"""
-    return scrub_detail(detail) if detail else detail
 
 
 def _disable_broken_credentials(account_id: int, target: dict) -> None:
@@ -335,20 +319,16 @@ def mark_auth_failure(account_id: int, error: Exception, message: str) -> AuthEr
     """记录账号认证故障。"""
     kind = _failure_kind(error, message)
     if kind:
-        target = db.get_account_notification_target(account_id)
-        db.set_auth_error(account_id, kind)
+        with db.transaction():
+            target = db.get_account_notification_target(account_id)
+            db.set_auth_error(account_id, kind)
+            if kind == AuthError.BAD_CREDENTIALS and target and target["auth_error"] != kind:
+                db.queue_credential_notice(account_id, to_local_iso(local_now(cfg.config.tz)))
         log_event("checkin.auth_failed", account_id=account_id, kind=kind,
                   detail=scrub_detail(message))
         if kind == AuthError.BAD_CREDENTIALS and target:
             _disable_broken_credentials(account_id, target)
-            if target["auth_error"] != kind:
-                try:
-                    result = send_credential_invalid_notice(target["email"], target["csu_username"])
-                    log_event("account.credential_invalid_notified", account_id=account_id,
-                              sent=result["sent"])
-                except Exception as notify_error:  # noqa: BLE001 - 通知失败不影响账号状态
-                    log_event("account.credential_invalid_notify_failed", level="warning",
-                              account_id=account_id, error=scrub_detail(str(notify_error)))
+            send_credential_notice(account_id)
     return kind
 
 
@@ -386,7 +366,10 @@ def _login(account: dict, *, entry: str = ENTRY_CHECKIN, ip: str | None = None) 
 def _locked(account: dict, fn):
     """拿锁后重新读账号：排队期间前一个任务可能刚写回新登录态。"""
     with lock_for(f"account:{account['id']}"):
-        return fn(db.get_account_by_id(account["id"]) or account)
+        fresh = db.get_account_by_id(account["id"])
+        if fresh is None:
+            raise AppError("账号不存在", status=404, expose=True)
+        return fn(fresh)
 
 
 _relogin_limiter = SlidingWindow(cfg.config.relogin_cooldown_seconds * 1000, 1)
@@ -421,7 +404,7 @@ def _refresh_login_body(account: dict) -> dict:
     try:
         _login(account, entry=ENTRY_REFRESH)
         return {"ok": True, "message": "已刷新登录态"}
-    except (LoginPausedError, RateLimitError) as error:
+    except (LoginPausedError, RateLimitError, ExitUnreachableError) as error:
         return {"ok": False, "deferred": True, "message": scrub_detail(str(error))}
     except Exception as error:  # noqa: BLE001 - 刷新失败只记账号故障，不写成打卡记录
         message = str(error)
@@ -476,6 +459,8 @@ def _base_verdict(client) -> dict:
     """补查基准点，获取学校的拒绝原因。"""
     try:
         return buildings.verdict(client, buildings.base())
+    except ExitUnreachableError:
+        raise
     except Exception:  # noqa: BLE001 - 补查失败不覆盖原错误
         return {}
 
@@ -485,6 +470,8 @@ def _determine_location(client, account) -> tuple[tuple[float, float] | None, di
     previous = account.get("dkdz") or "未测"
     try:
         coord, school_name, found, source = buildings.for_student(client, account.get("dkdz") or "")
+    except ExitUnreachableError:
+        raise
     except Exception as error:  # noqa: BLE001 - 定位失败时补查学校判定
         log_event("checkin.locate_failed", level="warning", account_id=account["id"],
                   detail=scrub_detail(str(error)))
@@ -508,6 +495,8 @@ def _jitter_coord(client: ZhxgClient, account: dict,
         point = buildings.scatter(coord, radius)
         try:
             judged = buildings.verdict(client, point)
+        except ExitUnreachableError:
+            raise
         except Exception:  # noqa: BLE001 - 失败时使用原坐标
             continue
         if judged.get("canDk"):
@@ -564,7 +553,7 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
     try:
         result = client.submit_dk(jd=jd, wd=wd, dkbc=data.get("dkbc") or "",
                                   dkdz=location.get("yxMc") or account.get("dkdz") or "")
-    except (requests.RequestException, TimeoutError, ConnectionError) as error:
+    except (requests.RequestException, TimeoutError, ConnectionError, ExitUnreachableError) as error:
         log_event("checkin.submit_unknown", level="warning", account_id=account["id"],
                   detail=scrub_detail(str(error)))
         return None
@@ -583,7 +572,7 @@ def _business_status(account: dict) -> tuple[ZhxgClient, dict, str]:
         if force or not has_fresh_login(account) or not client.token:
             try:
                 client = _login(account, entry=ENTRY_CHECKIN)
-            except (LoginPausedError, CasIpFrozenError, RateLimitError):
+            except (LoginPausedError, CasIpFrozenError, RateLimitError, ExitUnreachableError):
                 raise
             except Exception as error:
                 mark_auth_failure(account["id"], error, str(error))
@@ -682,9 +671,22 @@ def _resolve_verification_body(account: dict) -> CheckinResult | None:
 
 
 def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
+    """提交前遇到出口故障时重试，尝试次数不超过出口总数。"""
     if is_verifying(account["id"]):
         return _verifying_result()
+    for _ in range(exits.summary()["total"]):
+        try:
+            return _attempt(account, trigger)
+        except ExitUnreachableError as error:
+            log_event("checkin.exit_retry", level="warning", account_id=account["id"],
+                      detail=scrub_detail(str(error)))
+    run_at = to_local_iso(local_now(cfg.config.tz))
+    message = "网络出口重试失败，请稍后重试"
+    _record(account, run_at, trigger, CheckinStatus.FAILED, message, None)
+    return {"status": CheckinStatus.FAILED, "message": message, "dksj": None}
 
+
+def _attempt(account: AccountRow | dict, trigger: str) -> CheckinResult:
     run_at = to_local_iso(local_now(cfg.config.tz))
     status, message, dksj = CheckinStatus.FAILED, "", None
 
@@ -705,6 +707,8 @@ def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
             if outcome is None:
                 return _defer_verification(account, run_at, trigger)
             status, message, dksj = outcome
+    except ExitUnreachableError:
+        raise
     except (LoginPausedError, CasIpFrozenError) as error:
         return _paused_result(error)
     except RateLimitError as error:
