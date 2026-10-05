@@ -19,7 +19,7 @@ PROBE_RADIUS_RATIO = 0.05
 PROBE_BEARINGS = (0.0, 120.0, 240.0)
 LOCATE_ATTEMPTS = 3
 VERIFY_MAX_M = 50.0
-LABEL_HINTS = ("租房", "申报", "地址", "你", "我")
+LABEL_HINTS = ("租房", "申报", "地址")
 MAX_NAME_LEN = 12
 
 _R = 6371000.0
