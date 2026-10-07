@@ -1,6 +1,7 @@
 """网页路由。"""
 from __future__ import annotations
 
+import json
 import pathlib
 
 from fastapi import APIRouter, Form, Request, Response
@@ -73,6 +74,34 @@ def _render(request: Request, template: str, context: dict) -> HTMLResponse:
 def _oob(html: str) -> str:
     """标记 htmx 带外替换。"""
     return html.replace(' id="accounts-card"', ' id="accounts-card" hx-swap-oob="true"', 1)
+
+
+def _donors() -> list[dict[str, str]]:
+    """名单缺失或格式无效时返回空列表。"""
+    path = pathlib.Path(__file__).parent / "data" / "donors.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    donors = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        donors.append({
+            "name": name,
+            "amount": str(item.get("amount") or "").strip(),
+        })
+    return donors
+
+
+@router.get("/donate", response_class=HTMLResponse)
+def page_donate(request: Request):
+    return _render(request, "donate.html", {"donors": _donors()})
 
 
 @router.get("/", response_class=HTMLResponse)

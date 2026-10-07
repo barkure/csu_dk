@@ -83,6 +83,36 @@ header {
 }
 
 .status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.status .plain-link {
+  color: var(--muted); text-decoration: none; padding: 4px 0;
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.status .plain-link:hover {
+  color: var(--ink); text-decoration: underline; text-underline-offset: 2px;
+}
+.modal { display: none; }
+.modal:target {
+  display: flex; align-items: center; justify-content: center;
+  position: fixed; inset: 0; z-index: 50;
+}
+.modal-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .55); }
+.modal-card {
+  position: relative;
+  background: var(--paper); border: 2px solid var(--hair);
+  padding: 48px 48px 32px; text-align: center;
+  max-width: min(420px, 90vw);
+}
+.modal-card img { display: block; margin: 0 auto; }
+.donate-note {
+  margin: 24px 0 0;
+  color: var(--muted); font-size: 13px; text-align: left;
+}
+.donate-note p { margin: 0; }
+.donate-note p + p { margin-top: 12px; }
+.donate-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+@media (prefers-color-scheme: dark) {
+  .modal-backdrop { background: rgba(0, 0, 0, .75); }
+}
 
 
 
@@ -125,20 +155,20 @@ button.plain.danger:active:not(:disabled) { background: none; color: var(--dange
 
 
 #records-card { position: relative; }
-#close-records {
-  position: absolute; top: 10px; right: 12px;
-  background: none; margin: 0; padding: 6px 10px;
+.card-close {
+  position: absolute; top: 10px; right: 10px;
+  background: none; margin: 0; padding: 6px;
 
   border: 2px solid transparent;
-  color: var(--ink); cursor: pointer;
+  color: var(--ink); cursor: pointer; text-decoration: none;
 
   display: flex; align-items: center; justify-content: center;
   line-height: 0;
 }
-#close-records svg { display: block; }
+.card-close svg { display: block; }
 
-#close-records:hover:not(:disabled) { background: none; color: var(--ink); border-color: var(--hair); }
-#close-records:active:not(:disabled) { background: none; color: var(--ink); border-color: var(--hair); }
+.card-close:hover:not(:disabled) { background: none; color: var(--ink); border-color: var(--hair); }
+.card-close:active:not(:disabled) { background: none; color: var(--ink); border-color: var(--hair); }
 
 
 
@@ -155,6 +185,22 @@ button.plain.danger:active:not(:disabled) { background: none; color: var(--dange
 .card.login h1 { margin-bottom: 10px; }
 .card.login > .muted { margin: 0 0 22px; font-size: 13px; }
 .card.login .msg { margin-top: 16px; }
+
+body.donate {
+  font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
+}
+header.page-title { justify-content: center; }
+header.page-title h1 {
+  padding-left: 0; font-size: 28px;
+  letter-spacing: 0; text-transform: none;
+  transition: opacity .4s ease;
+}
+.donors { max-width: 1040px; margin: 0 auto 22px; font-size: 15px; }
+.donors-empty { text-align: center; }
+.donors table { width: auto; margin: 0 auto; font-size: 15px; }
+.donors td { padding: 8px 40px; white-space: nowrap; border-bottom: 0; }
+.donors td:first-child { text-align: left; color: var(--ink); }
+.donors td:nth-child(2) { text-align: right; color: var(--muted); }
 
 
 
@@ -190,6 +236,11 @@ button.plain.danger:active:not(:disabled) { background: none; color: var(--dange
 
 
 @media (max-width: 720px) {
+  .donors { padding: 0 56px; }
+  .donors table { width: 100%; }
+  .donors td { padding-left: 0; padding-right: 0; }
+  .donors td:first-child { width: 100%; white-space: normal; }
+  .donors td:nth-child(2) { padding-left: 16px; }
 
   header { margin-bottom: 26px; }
 

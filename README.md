@@ -47,4 +47,4 @@ uv run ruff check .
 
 ## 许可证
 
-[MIT License](LICENSE)
+[MIT](LICENSE)

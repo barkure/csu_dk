@@ -1,5 +1,5 @@
 <section class="card{% if not records %} hidden{% endif %}" id="records-card">
-  <button type="button" id="close-records" title="关闭" aria-label="关闭"
+  <button type="button" class="card-close" title="关闭" aria-label="关闭"
           hx-get="/ui/records/close" hx-target="#records-card" hx-swap="outerHTML">
     <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
       <path d="M1 1 13 13M13 1 1 13" stroke="currentColor" stroke-width="2"/>

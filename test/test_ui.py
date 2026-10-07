@@ -120,6 +120,12 @@ def test_message_lives_inside_the_swapped_panel(client):
     assert 'hx-target="#login-form"' not in html
 
 
+def test_donate_page_is_public(client):
+    html = client.get("/donate").text
+    assert "谢谢!" in html
+    assert "<th>" not in html
+
+
 def test_login_flow_and_dashboard(client):
     ui_login(client, "ui-b@example.com")
     html = client.get("/dashboard").text

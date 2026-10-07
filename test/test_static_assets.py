@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 STATIC = Path(__file__).resolve().parent.parent / "app" / "static"
-OUR_SCRIPTS = ["login.js", "form.js"]
+OUR_SCRIPTS = ["login.js", "form.js", "donate.js"]
 HTMX_VERSION = "4.0.0"
 
 

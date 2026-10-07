@@ -6,8 +6,28 @@
   <div class="status">
     <span id="who-email">{{ email }}</span>
     <button type="button" class="plain" hx-post="/ui/logout" hx-swap="none">登出</button>
+    <a href="#donate-modal" class="plain-link">捐赠</a>
   </div>
 </header>
+
+<div id="donate-modal" class="modal">
+  <a href="#" class="modal-backdrop" aria-label="关闭"></a>
+  <div class="modal-card">
+    <a href="#" class="card-close" title="关闭" aria-label="关闭">
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+        <path d="M1 1 13 13M13 1 1 13" stroke="currentColor" stroke-width="2"/>
+      </svg>
+    </a>
+    <picture>
+      <source srcset="/static/donate-dark.webp" media="(prefers-color-scheme: dark)">
+      <img src="/static/donate-light.webp" alt="捐赠作者" width="200" height="200" loading="lazy">
+    </picture>
+    <div class="donate-note">
+      <p>请使用微信扫码，捐赠会用于服务器和邮件通知等费用，你不会获得任何额外服务。</p>
+      <p>如希望在<a href="/donate">捐赠名单</a>中留下你的名字，请备注。</p>
+    </div>
+  </div>
+</div>
 
 <script src="/static/form.js"></script>
 

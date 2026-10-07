@@ -19,7 +19,9 @@ SECURITY_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "same-origin",
     "Content-Security-Policy": (
-        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "default-src 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.cn; "
+        "font-src 'self' https://fonts.gstatic.cn; "
         "script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; "
         "frame-ancestors 'none'"
     ),

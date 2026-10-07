@@ -6,13 +6,16 @@
 <title>{% block title %}妙妙道具{% endblock %}</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/app.css">
+{% block head %}{% endblock %}
 <script src="/static/htmx.min.js"></script>
 </head>
 <body class="{% block body_class %}{% endblock %}">
 {% block content %}{% endblock %}
+{% block footer %}
 <footer class="site-footer">
   Crafted by <a href="https://barku.re">Barkure</a>, open source on
   <a href="https://github.com/barkure/csu_dk">GitHub</a>.
 </footer>
+{% endblock %}
 </body>
 </html>

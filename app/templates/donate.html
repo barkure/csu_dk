@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}谢谢! · 妙妙道具{% endblock %}
+{% block body_class %}donate{% endblock %}
+{% block head %}
+<link rel="preconnect" href="https://fonts.googleapis.cn">
+<link rel="preconnect" href="https://fonts.gstatic.cn" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.cn/css2?family=Noto+Serif+SC:wght@400;700&display=swap">
+{% endblock %}
+{% block content %}
+<header class="page-title">
+  <h1 id="thanks">谢谢!</h1>
+</header>
+<section class="donors">
+  {% if donors %}
+  <div class="table-wrap">
+    <table>
+      <tbody>
+      {% for donor in donors %}
+        <tr>
+          <td>{{ donor.name }}</td>
+          <td>{{ donor.amount }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted donors-empty">暂无捐赠者</p>
+  {% endif %}
+</section>
+<script src="/static/donate.js"></script>
+{% endblock %}
+{% block footer %}{% endblock %}

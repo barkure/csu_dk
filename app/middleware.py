@@ -16,9 +16,11 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "same-origin",
-    # 模板无内联脚本/样式事件，htmx 4 无 eval；style 放行内联是给动态样式留余地
+    # 禁止内联脚本和 eval；允许内联样式以支持动态样式。
     "Content-Security-Policy": (
-        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "default-src 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.cn; "
+        "font-src 'self' https://fonts.gstatic.cn; "
         "script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; "
         "frame-ancestors 'none'"
     ),
