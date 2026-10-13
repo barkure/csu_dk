@@ -1,0 +1,6 @@
+{% extends "mail/base.html" %}
+{% block title %}登录验证码{% endblock %}
+{% block content %}
+<p style="margin:0 0 12px;">登录验证码是 <strong style="font-size:20px;letter-spacing:2px;">{{ code }}</strong>，{{ minutes }} 分钟内有效。</p>
+<p style="margin:0;color:#666;">如果不是你本人操作，请忽略这封邮件。</p>
+{% endblock %}

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 
 [[package]]
@@ -196,7 +196,6 @@ dependencies = [
     { name = "python-multipart" },
     { name = "requests" },
     { name = "structlog" },
-    { name = "tencentcloud-sdk-python-ses" },
     { name = "uvicorn" },
 ]
 
@@ -221,7 +220,6 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "requests", specifier = ">=2.32" },
     { name = "structlog", specifier = ">=26.1.0" },
-    { name = "tencentcloud-sdk-python-ses", specifier = ">=3.1.135" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
@@ -811,30 +809,6 @@ source = { registry = "https://mirrors.ustc.edu.cn/pypi/simple" }
 sdist = { url = "https://mirrors.ustc.edu.cn/pypi/packages/5e/89/b4a0bcfdf4f71a3dea31379f095929613d7e4528a0996bca6aa964cd0dca/structlog-26.1.0.tar.gz", hash = "sha256:f63a716cbd1b1291cf7661de7794b455acfa4c43c5bcf1630e6ad5ddc1adb3b7", size = 1459881, upload-time = "2026-06-06T07:33:39.348Z" }
 wheels = [
     { url = "https://mirrors.ustc.edu.cn/pypi/packages/a9/18/489c97b834dfff9cf2fc2507cede4bcd4b11e67f84bc462acd1992496f86/structlog-26.1.0-py3-none-any.whl", hash = "sha256:e081a26d6c373e6d201eca24eede26d8ffab07f88f477822e679183428d3d91e", size = 73764, upload-time = "2026-06-06T07:33:38.046Z" },
-]
-
-[[package]]
-name = "tencentcloud-sdk-python-common"
-version = "3.1.174"
-source = { registry = "https://mirrors.ustc.edu.cn/pypi/simple" }
-dependencies = [
-    { name = "requests" },
-]
-sdist = { url = "https://mirrors.ustc.edu.cn/pypi/packages/48/31/dd6af975b631cfc5521e40f4e548d8f1a6f3960c0f6971bac3cea88357bf/tencentcloud_sdk_python_common-3.1.174.tar.gz", hash = "sha256:9d834ebca19e279cf214ddb64eeb857475123082611d8a88dbbb4015ae27c5f2", size = 22669, upload-time = "2026-09-10T20:21:34.814Z" }
-wheels = [
-    { url = "https://mirrors.ustc.edu.cn/pypi/packages/6e/56/4c59e80a2bbf1c371bcd301ba901e499b764c3e23b504062f15dda03d7d4/tencentcloud_sdk_python_common-3.1.174-py2.py3-none-any.whl", hash = "sha256:b56f2ded2df69f23910b2cc5fc788371423a432a929f7871eeb9937f9b688747", size = 34273, upload-time = "2026-09-10T20:21:32.379Z" },
-]
-
-[[package]]
-name = "tencentcloud-sdk-python-ses"
-version = "3.1.135"
-source = { registry = "https://mirrors.ustc.edu.cn/pypi/simple" }
-dependencies = [
-    { name = "tencentcloud-sdk-python-common" },
-]
-sdist = { url = "https://mirrors.ustc.edu.cn/pypi/packages/2f/e9/ee7e7ee8658a6b973bf57bd2f41253fb19523df13bc2641aebd387845224/tencentcloud_sdk_python_ses-3.1.135.tar.gz", hash = "sha256:e67cfa5c5d3b5f0a65dc50829c30b9758d579c87ab3b0563a5aa00550b43aa73", size = 37893, upload-time = "2026-07-17T04:19:49.648Z" }
-wheels = [
-    { url = "https://mirrors.ustc.edu.cn/pypi/packages/e8/a0/196c42c3bcec2098dfce92e637383e4f9e0853577e66219730a81c3f42a6/tencentcloud_sdk_python_ses-3.1.135-py2.py3-none-any.whl", hash = "sha256:7519d1dafa284314cbde0d19164782cd47b3ddc013bf4a85d60232794c243fbf", size = 40137, upload-time = "2026-07-17T04:19:47.718Z" },
 ]
 
 [[package]]

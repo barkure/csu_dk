@@ -16,7 +16,7 @@
             <button class="check" role="checkbox" aria-checked="{{ 'true' if a.enabled else 'false' }}"
                     aria-label="自动打卡"
                     title="{{ '点击关闭自动打卡' if a.enabled else '点击开启自动打卡' }}"
-                    hx-post="/ui/accounts/{{ a.id }}/toggle" hx-target="#accounts-card" hx-swap="outerHTML">
+                    hx-post="/ui/accounts/{{ a.id }}/toggle?open={{ open_id or '' }}" hx-target="#accounts-card" hx-swap="outerHTML">
               <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
                 <path d="M1.5 6.5 4.5 9.5 10.5 2.5" fill="none" stroke="currentColor" stroke-width="2"/>
               </svg>

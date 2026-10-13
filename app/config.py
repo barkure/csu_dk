@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import os
+import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,22 @@ from .validate import parse_hm
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = os.environ.get("CSU_DK_ENV_FILE", str(PROJECT_ROOT / ".env"))
 KEY_BYTES = 32
+_NAMED_FROM = re.compile(r"^(?P<name>.*?)\s*<(?P<email>[^<>\s]+)>\s*$")
+
+
+def parse_mail_from(value: str) -> str | dict[str, str]:
+    """解析发件人地址及显示名称。"""
+    raw = value.strip()
+    match = _NAMED_FROM.fullmatch(raw)
+    email = match.group("email") if match else raw
+    try:
+        normalized = validate_email(email, check_deliverability=False).normalized
+    except EmailNotValidError as error:
+        raise ValueError(f"MAIL_FROM 不是合法发件人：{value}") from error
+    name = match.group("name").strip().strip('"') if match else ""
+    if name:
+        return {"name": name, "email": normalized}
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -89,13 +106,8 @@ class Settings(BaseSettings):
     # 同一 IP 每 30 分钟内的验证码校验上限
     login_code_verify_max: int = Field(default=5, ge=1, le=1000)
 
-    tencent_ses_secret_id: str = Field(default="", validation_alias="TENCENT_SES_SECRET_ID")
-    tencent_ses_secret_key: str = Field(default="", validation_alias="TENCENT_SES_SECRET_KEY")
-    tencent_ses_region: str = Field(default="ap-hongkong", validation_alias="TENCENT_SES_REGION")
-    tencent_ses_verification_code_template_id: int = Field(
-        default=0, ge=0, validation_alias="TENCENT_SES_VERIFICATION_CODE_TEMPLATE_ID")
-    tencent_ses_credential_invalid_template_id: int = Field(
-        default=0, ge=0, validation_alias="TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID")
+    plunk_secret_key: str = Field(default="", validation_alias="PLUNK_SECRET_KEY")
+    plunk_api_url: str = Field(default="https://next-api.useplunk.com", validation_alias="PLUNK_API_URL")
     mail_from: str = Field(default="", validation_alias="MAIL_FROM")
 
     @field_validator("data_dir", mode="before")
@@ -106,11 +118,33 @@ class Settings(BaseSettings):
             raise ValueError("数据目录不能为空")
         return value
 
-    @field_validator("tencent_ses_verification_code_template_id", "tencent_ses_credential_invalid_template_id",
-                     mode="before")
+    @field_validator("plunk_secret_key", mode="before")
     @classmethod
-    def _blank_template_id(cls, value: object) -> object:
-        return 0 if value in ("", None) else value
+    def _blank_plunk_secret(cls, value: object) -> object:
+        return "" if value in ("", None) else str(value).strip()
+
+    @field_validator("plunk_api_url", mode="before")
+    @classmethod
+    def _blank_plunk_url(cls, value: object) -> object:
+        if value in ("", None):
+            return "https://next-api.useplunk.com"
+        return str(value).strip().rstrip("/")
+
+    @field_validator("plunk_api_url")
+    @classmethod
+    def _valid_plunk_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError(f"PLUNK_API_URL 不是合法的 http(s) 地址：{value}")
+        return value
+
+    @field_validator("mail_from")
+    @classmethod
+    def _valid_mail_from(cls, value: str) -> str:
+        value = value.strip()
+        if value:
+            parse_mail_from(value)
+        return value
 
     @field_validator("allowed_emails", mode="before")
     @classmethod

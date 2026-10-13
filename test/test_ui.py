@@ -221,11 +221,18 @@ def test_toggle_flips_enabled(client):
     ui_login(client, "ui-g@example.com")
     user = db.find_user_by_email("ui-g@example.com")
     account = make_account(user["id"], "977000004")
-    client.post(f"/ui/accounts/{account['id']}/toggle")
+    response = client.post(f"/ui/accounts/{account['id']}/toggle")
     assert db.get_account_by_id(account["id"])["enabled"] == 0
+    assert 'class="actions-row"' not in response.text
 
-    client.post(f"/ui/accounts/{account['id']}/toggle")
+    response = client.post(f"/ui/accounts/{account['id']}/toggle?open={account['id']}")
     assert db.get_account_by_id(account["id"])["enabled"] == 1
+    assert 'class="actions-row"' in response.text
+
+    other = make_account(user["id"], "977009999")
+    response = client.post(f"/ui/accounts/{account['id']}/toggle?open={other['id']}")
+    assert f"/ui/accounts/{other['id']}/run" in response.text
+    assert f"/ui/accounts/{account['id']}/run" not in response.text
 
 
 def test_edit_form_prefills_account(client):

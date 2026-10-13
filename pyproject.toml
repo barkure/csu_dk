@@ -17,7 +17,6 @@ dependencies = [
     "structlog>=26.1.0",
     "jinja2>=3.1.6",
     "python-multipart>=0.0.32",
-    "tencentcloud-sdk-python-ses>=3.1.135",
     "ddddocr>=1.6.1",
 ]
 

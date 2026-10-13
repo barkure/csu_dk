@@ -209,12 +209,12 @@ def ui_create(request: Request, csu_username: str = Form("", alias="csuUsername"
 
 
 @router.post("/ui/accounts/{account_id}/toggle", response_class=HTMLResponse)
-def ui_toggle(request: Request, account_id: int):
+def ui_toggle(request: Request, account_id: int, open: str = ""):
     user = _user(request)
     if not user:
         return _to_login(request)
     accounts_service.toggle_enabled(user, account_id, source="ui")
-    return _render(request, "partials/accounts.html", _context(user, open_id=account_id))
+    return _render(request, "partials/accounts.html", _context(user, open_id=int(open) if open.isdigit() else None))
 
 
 @router.post("/ui/accounts/{account_id}/run", response_class=HTMLResponse)

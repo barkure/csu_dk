@@ -28,8 +28,7 @@ SPECIAL = {
     "CSU_DK_CHECKIN_WINDOW_END": "23:00",
     "CSU_DK_COOKIE_SECURE": "true",            # 示例建议值与代码默认值不同
     "MAIL_FROM": "Changed <changed@example.com>",
-    "TENCENT_SES_VERIFICATION_CODE_TEMPLATE_ID": "123456",
-    "TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID": "123456",
+    "PLUNK_API_URL": "https://mail.example.com",
 }
 
 
@@ -59,18 +58,33 @@ def test_data_dir_defaults_into_project(monkeypatch):
     assert not re.search(r"^CSU_DK_TEST_DATA_DIR=", EXAMPLE.read_text(), re.M)
 
 
-def test_blank_template_id_is_treated_as_unset(monkeypatch):
-    monkeypatch.setenv("TENCENT_SES_VERIFICATION_CODE_TEMPLATE_ID", "")
-    monkeypatch.setenv("TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID", "")
-    assert Settings().tencent_ses_verification_code_template_id == 0
-    assert Settings().tencent_ses_credential_invalid_template_id == 0
+def test_blank_plunk_settings_are_treated_as_unset(monkeypatch):
+    monkeypatch.setenv("PLUNK_API_URL", "")
+    monkeypatch.setenv("PLUNK_SECRET_KEY", "")
+    settings = Settings()
+    assert settings.plunk_api_url == "https://next-api.useplunk.com"
+    assert settings.plunk_secret_key == ""
+
+
+@pytest.mark.parametrize("value", [
+    "ftp://mail.example.com",
+    "https://user:pass@mail.example.com",
+    "mail.example.com",
+])
+def test_plunk_api_url_rejects_invalid_values(monkeypatch, value):
+    monkeypatch.setenv("PLUNK_API_URL", value)
+    with pytest.raises(ValueError, match="PLUNK_API_URL"):
+        Settings()
+
+
+def test_mail_from_must_be_a_valid_sender(monkeypatch):
+    monkeypatch.setenv("MAIL_FROM", "not-an-email")
+    with pytest.raises(ValueError, match="MAIL_FROM"):
+        Settings()
 
 
 SUGGESTIONS = {
-    "MAIL_FROM", "TENCENT_SES_SECRET_ID", "TENCENT_SES_SECRET_KEY",
-    "TENCENT_SES_VERIFICATION_CODE_TEMPLATE_ID",
-    "TENCENT_SES_CREDENTIAL_INVALID_TEMPLATE_ID",
-    "CSU_DK_ALLOWED_EMAILS", "CSU_DK_COOKIE_SECURE",
+    "MAIL_FROM", "CSU_DK_ALLOWED_EMAILS", "CSU_DK_COOKIE_SECURE",
 }
 
 
