@@ -75,12 +75,14 @@ def load_cookies(session: requests.Session, raw: str | None) -> None:
 
 
 def new_session(proxy: str | None = None) -> requests.Session:
-    session = requests.Session()
     if proxy is None:
         proxy = exits.current()
+    if not proxy:
+        raise ExitUnreachableError()
+    session = requests.Session()
+    session.trust_env = False
     session.csu_exit = proxy
-    if proxy:
-        session.proxies.update({"http": proxy, "https": proxy})
+    session.proxies.update({"http": proxy, "https": proxy})
     return session
 
 
@@ -122,9 +124,7 @@ class ZhxgClient:
         return self._exchange_callback(html)
 
     def _fail_exit(self, error: requests.exceptions.ConnectionError) -> None:
-        """代理连接失败时冷却出口；直连保留原异常。"""
-        if not self.exit:
-            return
+        """代理连接失败时冷却出口。"""
         exits.mark_unreachable(self.exit)
         raise ExitUnreachableError() from error
 

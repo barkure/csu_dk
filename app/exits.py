@@ -1,10 +1,11 @@
-"""学校流量出口：在校园网代理与服务器直连之间轮询，自动跳过冷却出口。"""
+"""校园网代理轮询与冷却。"""
 from __future__ import annotations
 
 import time
 from threading import Lock
 
 from . import config as cfg
+from .errors import AppError
 from .log import log_event
 
 _frozen_until: dict[str, float] = {}
@@ -13,12 +14,11 @@ _lock = Lock()
 
 
 def _exits() -> list[str]:
-    """返回参与轮询的代理出口与服务器直连（空串）。"""
-    return [*cfg.config.outbound_proxies, ""]
+    return list(cfg.config.outbound_proxies)
 
 
 def label(exit_: str) -> str:
-    return exit_ or "服务器直连"
+    return exit_
 
 
 def _is_healthy(candidate: str, now: float) -> bool:
@@ -28,6 +28,9 @@ def _is_healthy(candidate: str, now: float) -> bool:
 def _select(candidates: list[str], now: float) -> str:
     """在已持锁时轮询选择健康出口。"""
     global _next_index
+
+    if not candidates:
+        raise AppError("未配置校园网代理，请设置 CSU_DK_PROXIES", status=503, expose=True)
 
     for offset in range(len(candidates)):
         index = (_next_index + offset) % len(candidates)

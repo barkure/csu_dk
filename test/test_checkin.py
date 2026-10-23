@@ -402,7 +402,7 @@ def test_engine_skipped_when_already_checked_in(user, monkeypatch):
 @pytest.mark.parametrize("phase", ["status", "location", "base", "jitter"])
 def test_engine_retries_exit_failure_before_submit(user, monkeypatch, phase):
     monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
-        update={"outbound_proxies": ("http://127.0.0.1:1091",)}))
+        update={"outbound_proxies": ("http://127.0.0.1:1091", "http://127.0.0.1:1092")}))
     first = EngineClient({"sfydk": 0, "kdk": True}, location={"canDk": True})
     second = EngineClient({"sfydk": 1, "dksj": "2026-09-12 20:18:43"})
     account = engine_account(user, monkeypatch, first, dkdz="升华8栋" if phase == "jitter" else "")
@@ -455,7 +455,7 @@ def test_engine_bounds_exit_retries(user, monkeypatch):
     result = engine_status(account)
 
     assert result["status"] == "failed"
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert result["message"] == "网络出口重试失败，请稍后重试"
     assert len(db.list_records(account["id"])) == 1
 

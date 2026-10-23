@@ -5,7 +5,7 @@ import pytest
 import requests
 
 from app import config as cfg
-from app.csu.zhxg import ZhxgClient, load_cookies
+from app.csu.zhxg import ZhxgClient, load_cookies, new_session
 from app.errors import ExitUnreachableError
 
 
@@ -78,34 +78,32 @@ def test_connection_failure_on_proxy_exit_cools_it_down(monkeypatch, stage):
         operations[stage]()
 
     assert caught.value.__cause__ is error
-    assert exits.summary() == {"healthy": 1, "total": 2}
-    assert exits.current() == ""
+    assert exits.summary() == {"healthy": 0, "total": 1}
+    assert exits.current() == "http://127.0.0.1:1092"
     assert [event for event, _fields in events] == ["exit.unreachable"]
     for secret in ("private-ticket", "private-token"):
         assert secret not in str(caught.value)
         assert secret not in str(events)
 
 
-@pytest.mark.parametrize("stage", ["cas", "token", "business"])
-def test_connection_failure_on_direct_exit_is_not_an_exit_fault(monkeypatch, stage):
+def test_missing_proxy_prevents_session_creation(monkeypatch):
     from app import exits
+    from app.errors import AppError
 
     monkeypatch.setattr(cfg, "config", cfg.config.model_copy(update={"outbound_proxies": ()}))
     exits.reset()
-    client = ZhxgClient()
-    error = requests.exceptions.ConnectionError("Connection reset by peer")
+    with pytest.raises(AppError, match="未配置校园网代理"):
+        ZhxgClient()
+    with pytest.raises(ExitUnreachableError):
+        new_session("")
 
-    def disconnect(*_args, **_kwargs):
-        raise error
 
-    monkeypatch.setattr(client.session, "request", disconnect)
-    operations = {
-        "cas": lambda: client.login("test-student", "test-password"),
-        "token": lambda: client._exchange_callback("var uid = 'test-student';"),
-        "business": client.dk_status,
+def test_session_uses_configured_proxy_despite_environment(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://untrusted:9999")
+    monkeypatch.setenv("NO_PROXY", "*")
+    session = new_session("http://127.0.0.1:1091")
+    settings = session.merge_environment_settings("https://ca.csu.edu.cn/", {}, False, True, None)
+    assert session.trust_env is False
+    assert settings["proxies"] == {
+        "http": "http://127.0.0.1:1091", "https": "http://127.0.0.1:1091",
     }
-    with pytest.raises(requests.exceptions.ConnectionError) as caught:
-        operations[stage]()
-
-    assert caught.value is error
-    assert exits.summary() == {"healthy": 1, "total": 1}

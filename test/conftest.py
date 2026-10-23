@@ -45,8 +45,13 @@ def _disable_login_rate_limits(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _reset_login_state():
+def _reset_login_state(monkeypatch):
     from app import checkin, exits
+    from app import config as cfg
+
+    monkeypatch.setattr(cfg, "config", cfg.config.model_copy(update={
+        "outbound_proxies": ("http://127.0.0.1:1091", "http://127.0.0.1:1092"),
+    }))
 
     checkin.reset_login_state()
     checkin.reset_verifications()

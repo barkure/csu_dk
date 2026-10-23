@@ -339,7 +339,7 @@ def test_frozen_exit_switches_to_next_proxy(monkeypatch):
 
     exits._frozen_until["http://127.0.0.1:1091"] = time.time() - 1      # 冷却过期
     assert [exits.current(), exits.current(), exits.current()] == [
-        "", "http://127.0.0.1:1091", "http://127.0.0.1:1092",
+        "http://127.0.0.1:1091", "http://127.0.0.1:1092", "http://127.0.0.1:1091",
     ]
 
 
@@ -351,8 +351,9 @@ def test_healthy_exits_are_round_robin(monkeypatch):
             "http://127.0.0.1:1091", "http://127.0.0.1:1092")}))
     exits.reset()
     assert [exits.current() for _ in range(6)] == [
-        "http://127.0.0.1:1091", "http://127.0.0.1:1092", "",
-        "http://127.0.0.1:1091", "http://127.0.0.1:1092", "",
+        "http://127.0.0.1:1091", "http://127.0.0.1:1092",
+        "http://127.0.0.1:1091", "http://127.0.0.1:1092",
+        "http://127.0.0.1:1091", "http://127.0.0.1:1092",
     ]
 
 
@@ -363,18 +364,14 @@ def test_exit_summary_counts_healthy_exits(monkeypatch):
         update={"outbound_proxies": (
             "http://127.0.0.1:1091", "http://127.0.0.1:1092")}))
     exits.reset()
-    assert exits.summary() == {"healthy": 3, "total": 3}
-    assert exits.summary() == {"healthy": 3, "total": 3}  # 只读，不推进轮询
+    assert exits.summary() == {"healthy": 2, "total": 2}
+    assert exits.summary() == {"healthy": 2, "total": 2}  # 只读，不推进轮询
 
     exits.mark_frozen("http://127.0.0.1:1091", "学校冻结")
-    assert exits.summary() == {"healthy": 2, "total": 3}
+    assert exits.summary() == {"healthy": 1, "total": 2}
 
     exits.mark_frozen("http://127.0.0.1:1092", "学校冻结")
-    assert exits.summary() == {"healthy": 1, "total": 3}
-    assert exits.available() is True
-
-    exits.mark_frozen("", "学校冻结")
-    assert exits.summary() == {"healthy": 0, "total": 3}
+    assert exits.summary() == {"healthy": 0, "total": 2}
     assert exits.available() is False
 
 
@@ -383,7 +380,12 @@ def test_exit_summary_without_proxies(monkeypatch):
 
     monkeypatch.setattr(cfg, "config", cfg.config.model_copy(update={"outbound_proxies": ()}))
     exits.reset()
-    assert exits.summary() == {"healthy": 1, "total": 1}
+    assert exits.summary() == {"healthy": 0, "total": 0}
+    assert exits.available() is False
+    from app.errors import AppError
+
+    with pytest.raises(AppError, match="未配置校园网代理"):
+        exits.current()
 
 
 def test_frozen_exit_retries_on_fallback(real_login, audit, monkeypatch):
@@ -409,7 +411,7 @@ def test_both_exits_frozen_then_pauses(real_login, audit, monkeypatch):
     from app import exits
 
     monkeypatch.setattr(cfg, "config", cfg.config.model_copy(
-        update={"outbound_proxies": ("http://127.0.0.1:1091",)}))
+        update={"outbound_proxies": ("http://127.0.0.1:1091", "http://127.0.0.1:1092")}))
     exits.reset()
     frozen = CasIpFrozenError("您的IP已被冻结")
     client = FakeLogin([frozen, frozen])
@@ -449,7 +451,7 @@ def test_unreachable_exit_switches_and_retries(real_login, audit, monkeypatch):
 
     assert requests_made == [(primary, "GET"), (fallback, "GET"), (fallback, "POST")]
     assert client.exit == fallback
-    assert exits.summary() == {"healthy": 2, "total": 3}
+    assert exits.summary() == {"healthy": 1, "total": 2}
     assert [event["result"] for event in audit] == ["exit_unreachable", "ok"]
 
 
