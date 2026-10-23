@@ -14,10 +14,14 @@
   {% if donors %}
   <div class="table-wrap">
     <table>
+      <thead>
+        <tr><th>转账单号</th><th>留言</th><th>金额</th></tr>
+      </thead>
       <tbody>
       {% for donor in donors %}
         <tr>
-          <td>{{ donor.name }}</td>
+          <td>{{ '*' ~ donor.order if donor.order else '' }}</td>
+          <td>{{ donor.remark }}</td>
           <td>{{ donor.amount }}</td>
         </tr>
       {% endfor %}

@@ -89,11 +89,9 @@ def _donors() -> list[dict[str, str]]:
     for item in data:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or "").strip()
-        if not name:
-            continue
         donors.append({
-            "name": name,
+            "order": str(item.get("order") or "").strip()[-8:],
+            "remark": str(item.get("remark") or "").strip(),
             "amount": str(item.get("amount") or "").strip(),
         })
     return donors

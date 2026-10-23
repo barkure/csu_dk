@@ -120,10 +120,23 @@ def test_message_lives_inside_the_swapped_panel(client):
     assert 'hx-target="#login-form"' not in html
 
 
-def test_donate_page_is_public(client):
+def test_donate_page_is_public(client, monkeypatch):
+    from app import ui
+
+    original = Path.read_text
+
+    def read_text(path, *args, **kwargs):
+        if path.name == "donors.json":
+            return '[{"order":"2026101512345","remark":"","amount":"CNY 5"}]'
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert ui._donors() == [{"order": "01512345", "remark": "", "amount": "CNY 5"}]
     html = client.get("/donate").text
     assert "谢谢!" in html
-    assert "<th>" not in html
+    assert "转账单号" in html and "留言" in html and "金额" in html
+    assert "*01512345" in html and "2026101512345" not in html
+    assert "匿名" not in html
 
 
 def test_login_flow_and_dashboard(client):

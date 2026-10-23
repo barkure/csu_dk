@@ -198,9 +198,13 @@ header.page-title h1 {
 .donors { max-width: 1040px; margin: 0 auto 22px; font-size: 15px; }
 .donors-empty { text-align: center; }
 .donors table { width: auto; margin: 0 auto; font-size: 15px; }
-.donors td { padding: 8px 40px; white-space: nowrap; border-bottom: 0; }
+.donors th, .donors td { padding: 8px 24px; border-bottom: 0; font-size: inherit; }
+.donors th { color: var(--muted); font-weight: normal; text-align: center; }
+.donors td { white-space: nowrap; }
 .donors td:first-child { text-align: left; color: var(--ink); }
-.donors td:nth-child(2) { text-align: right; color: var(--muted); }
+.donors td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }
+.donors td:last-child { text-align: left; }
+.donors td:last-child { color: var(--muted); }
 
 
 
@@ -236,11 +240,11 @@ header.page-title h1 {
 
 
 @media (max-width: 720px) {
-  .donors { padding: 0 56px; }
+  .donors { padding: 0 12px; }
   .donors table { width: 100%; }
-  .donors td { padding-left: 0; padding-right: 0; }
-  .donors td:first-child { width: 100%; white-space: normal; }
-  .donors td:nth-child(2) { padding-left: 16px; }
+  .donors th, .donors td { padding-left: 8px; padding-right: 8px; }
+  .donors th { white-space: nowrap; }
+  .donors td:nth-child(2) { width: 100%; }
 
   header { margin-bottom: 26px; }
 
