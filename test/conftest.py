@@ -96,3 +96,4 @@ def _forbid_real_school_requests(monkeypatch):
         raise AssertionError("测试里不允许真的请求学校（会触发风控）")
 
     monkeypatch.setattr("app.checkin.cas_login", boom)
+    monkeypatch.setattr("requests.sessions.Session.send", boom)

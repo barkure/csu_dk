@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 import secrets
 import time
 from collections.abc import Callable
-from urllib.parse import urljoin
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -39,6 +40,29 @@ class CasIpFrozenError(Exception):
     frozen = True
 
 
+class CasMfaRequired(RuntimeError):
+    """A valid password needs the user's second factor in the same CAS session."""
+
+    def __init__(self, html: str, url: str, service: str):
+        self.url = url
+        self.params = {}
+        match = re.search(r"\breAuthParams\s*=\s*", html)
+        if match:
+            try:
+                params, _ = json.JSONDecoder().raw_decode(html[match.end():].lstrip())
+                if isinstance(params, dict) and params.get("service") == service:
+                    self.params = params
+            except ValueError:
+                pass
+        super().__init__("学校要求多因子认证，请点击「继续学校认证」完成短信验证；自动任务已暂停")
+
+
+def _check_mfa(response, service: str) -> None:
+    url = urlsplit(response.url)
+    if url.hostname == "ca.csu.edu.cn" and url.path == "/authserver/reAuthCheck/reAuthLoginView.do":
+        raise CasMfaRequired(response.text, response.url, service)
+
+
 class _CaptchaRejected(Exception):
     """验证码被拒。"""
 
@@ -58,7 +82,9 @@ def encrypt_password(password: str, salt: str) -> str:
 
 def input_value(html: str, field_id: str) -> str | None:
     """读取表单值。"""
-    tag = BeautifulSoup(html, "html.parser").find("input", id=field_id)
+    document = BeautifulSoup(html, "html.parser")
+    root = document.select_one("form#pwdFromId") or document
+    tag = root.find("input", id=field_id)
     value = tag.get("value") if tag else None
     return str(value) if value is not None else None
 
@@ -81,6 +107,7 @@ def detect_ip_frozen(html: str) -> CasIpFrozenError | None:
 
 
 _CAS_ERRORS = {
+    "mfa": ("多因子认证", "非可信浏览器", "继续学校认证"),
     "badCredentials": ("密码错误", "密码有误", "用户名或密码错"),
     "inactive": ("未激活",),
     "locked": ("锁定",),
@@ -97,7 +124,7 @@ def classify_error(text: str = "") -> str | None:
 
 
 def _is_cas_host(url: str) -> bool:
-    return url.startswith((CAS_BASE, "https://ca.csu.edu.cn/"))
+    return urlsplit(url).hostname == "ca.csu.edu.cn"
 
 
 def cas_login(session: requests.Session, username: str, password: str | None,
@@ -111,6 +138,7 @@ def cas_login(session: requests.Session, username: str, password: str | None,
     frozen = detect_ip_frozen(first.text)
     if frozen:
         raise frozen
+    _check_mfa(first, service)
 
     if not _is_cas_host(first.url):
         return first.text
@@ -253,6 +281,7 @@ def _submit_login(session: requests.Session, login_url: str, page_html: str, use
     frozen_after = detect_ip_frozen(posted.text)
     if frozen_after:
         raise frozen_after
+    _check_mfa(posted, parse_qs(urlsplit(login_url).query).get("service", [""])[0])
 
     tip = error_tip(posted.text)
     if tip:

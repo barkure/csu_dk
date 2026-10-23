@@ -12,6 +12,7 @@ class AuthError(StrEnum):
     BAD_CREDENTIALS = "bad_credentials"
     LOCKED = "locked"
     OTHER = "other"
+    MFA_REQUIRED = "mfa_required"
 
 
 class CheckinStatus(StrEnum):

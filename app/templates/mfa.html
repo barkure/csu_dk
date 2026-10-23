@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}学校短信认证 · 妙妙道具{% endblock %}
+{% block content %}
+<header><h1>学校短信认证</h1><a href="/dashboard">返回账号列表</a></header>
+<section class="card">
+  <h2>账号 {{ account.csu_username }}</h2>
+  <p>学校要求在密码验证后完成短信认证。短信由学校发送至已绑定手机号；验证码仅用于本次学校认证，不会保存。</p>
+  {% if not account.auth_error and not ready %}
+  <p class="msg ok">账号认证状态正常。可返回账号列表查看自动打卡状态。</p>
+  {% endif %}
+  <p class="msg {{ msg_kind }}">{{ msg }}</p>
+  <form method="post" action="/ui/accounts/{{ account.id }}/mfa/begin">
+    <button type="submit">准备学校认证</button>
+  </form>
+  {% if ready %}
+  <p>认证会话已就绪，有效期约10分钟。先发送短信，再输入收到的验证码。</p>
+  <form method="post" action="/ui/accounts/{{ account.id }}/mfa/send">
+    <button type="submit">发送学校短信验证码</button>
+  </form>
+  <form method="post" action="/ui/accounts/{{ account.id }}/mfa/verify">
+    <div class="fieldblock">
+      <label>学校短信验证码
+        <input name="code" inputmode="numeric" pattern="[0-9]{4,8}" required autocomplete="one-time-code">
+      </label>
+      <label><input name="trust" type="checkbox" value="true"> 信任此打卡服务的登录设备</label>
+      <p class="hint">勾选后，学校会记住此服务的登录设备，后续登录可能免于再次短信认证；是否生效及有效期由学校决定。不勾选则只完成本次认证。</p>
+      <button type="submit">验证并恢复登录</button>
+    </div>
+  </form>
+  {% endif %}
+  <p class="hint">完成认证会恢复登录状态，保留原有自动打卡开关；本页面不提交打卡。服务重启或会话过期后，请重新准备认证。</p>
+</section>
+{% endblock %}
