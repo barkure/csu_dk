@@ -49,6 +49,8 @@ class AccountRow(TypedDict):
     last_status: str | None
     last_message: str | None
     auth_error: str
+    checkin_start: str | None
+    checkin_end: str | None
     created_at: str
     updated_at: str
 

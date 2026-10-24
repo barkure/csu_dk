@@ -22,7 +22,7 @@
               </svg>
             </button>
           </td>
-          <td class="{{ item.today.cls }}" data-label="今日结果">{{ item.today.label }}</td>
+          <td class="{{ item.today.cls }}" data-label="今日结果"{% if item.window %} title="打卡时段 {{ item.window }}"{% endif %}>{{ item.today.label }}</td>
           <td data-label="楼栋"{% if not a.dkdz %} class="muted" title="学校按你申报的地址返回的楼栋名，首次打卡时自动补上"{% endif %}>{{ a.dkdz or '—' }}</td>
           <td class="right">
             <button class="plain manage" aria-expanded="{{ 'true' if open_id == a.id else 'false' }}"

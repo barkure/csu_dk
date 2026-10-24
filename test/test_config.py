@@ -24,8 +24,7 @@ SPECIAL = {
     "CSU_DK_TZ": "UTC",                          # 必须是合法时区
     "CSU_DK_ALLOWED_EMAILS": "someone@example.com",  # 必须是合法邮箱
     "CSU_DK_HOST": "0.0.0.0",
-    "CSU_DK_CHECKIN_WINDOW_START": "19:30",
-    "CSU_DK_CHECKIN_WINDOW_END": "23:00",
+    "CSU_DK_CHECKIN_START": "19:30",
     "CSU_DK_COOKIE_SECURE": "true",            # 示例建议值与代码默认值不同
     "MAIL_FROM": "Changed <changed@example.com>",
     "PLUNK_API_URL": "https://mail.example.com",

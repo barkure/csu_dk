@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   auth_error    TEXT NOT NULL DEFAULT '',
+  checkin_start      TEXT,
+  checkin_end        TEXT,
   UNIQUE(user_id, csu_username)
 );
 CREATE TABLE IF NOT EXISTS login_codes (

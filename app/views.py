@@ -4,7 +4,7 @@ from __future__ import annotations
 from . import config as cfg
 from .clock import local_now, to_local_iso
 from .domain import AuthError, CheckinStatus
-from .validate import to_minutes
+from .validate import account_checkin_window, to_minutes
 
 STATUS_TEXT = {
     CheckinStatus.SUCCESS: "打卡成功", CheckinStatus.SKIPPED: "已打过卡",
@@ -34,23 +34,15 @@ def _now() -> tuple[str, str]:
     return to_local_iso(now), to_local_iso(now)[11:16]
 
 
-def window_state() -> str:
-    """当前相对打卡窗口的位置：before / inside / after。跨天窗口不判 after。"""
-    start, end = cfg.config.checkin_window_start, cfg.config.checkin_window_end
-    if not start or not end:
-        return "before"
+def window_state(start: str, end: str) -> str:
+    """返回当前时段状态：before / inside / after。"""
     start_minutes, end_minutes = to_minutes(start), to_minutes(end)
     now_minutes = to_minutes(_now()[1])
-    if start_minutes > end_minutes:  # 跨午夜窗口：永远是"今天稍后还有机会"
+    if start_minutes > end_minutes:
         return "inside" if now_minutes >= start_minutes or now_minutes <= end_minutes else "before"
     if now_minutes > end_minutes:
         return "after"
     return "inside" if now_minutes >= start_minutes else "before"
-
-
-def window_passed() -> bool:
-    """跨天窗口永远算"今天稍后还有机会"，不判漏打。"""
-    return window_state() == "after"
 
 
 def today_result(account: dict, *, verifying: bool = False) -> dict:
@@ -59,20 +51,28 @@ def today_result(account: dict, *, verifying: bool = False) -> dict:
         return {"label": "等待确认", "cls": ""}
     today = _now()[0][:10]
     fresh = bool(account.get("last_status")) and str(account.get("last_run_at") or "")[:10] == today
-    if not fresh:
-        if not account.get("enabled"):
-            return {"label": "已暂停", "cls": ""}
-        state = window_state()
-        if state == "after":
-            return {"label": "打卡失败", "cls": "err"}
-        return {"label": "排队打卡中", "cls": ""} if state == "inside" else {"label": "未到时间", "cls": ""}
-    if account["last_status"] in (CheckinStatus.SUCCESS, CheckinStatus.SKIPPED):
+    if fresh and account["last_status"] in (CheckinStatus.SUCCESS, CheckinStatus.SKIPPED):
         return {"label": "打卡成功", "cls": "ok"}
-    if account["last_status"] == CheckinStatus.NO_TASK:
+    if fresh and account["last_status"] == CheckinStatus.NO_TASK:
         return {"label": "不用打卡", "cls": ""}
-    if account["last_status"] == CheckinStatus.FAILED:
+    if fresh and account["last_status"] == CheckinStatus.FAILED:
         return {"label": "打卡失败", "cls": "err"}
-    return {"label": "未到时间", "cls": ""}
+    if not fresh and not account.get("enabled"):
+        return {"label": "已暂停", "cls": ""}
+    state = _account_window_state(account)
+    if state == "after":
+        return {"label": "时段已结束", "cls": ""}
+    return {"label": "排队打卡中", "cls": ""} if state == "inside" else {"label": "未到时间", "cls": ""}
+
+
+def _account_window_state(account: dict) -> str:
+    window = account_checkin_window(account)
+    state = window_state(*window) if window else "inside"
+    if state == "after":
+        return state
+    if to_minutes(_now()[1]) < to_minutes(cfg.config.checkin_start):
+        return "before"
+    return state
 
 
 AUTH_STATUS = {
@@ -90,9 +90,16 @@ def account_status(account: dict) -> dict:
     return {"text": text, "cls": cls}
 
 
+def account_window(account: dict) -> str:
+    """返回账号打卡时段，未知时返回空字符串。"""
+    window = account_checkin_window(account)
+    return "–".join(window) if window else ""
+
+
 def account_view(account: dict, *, verifying: bool = False) -> dict:
     return {
         "raw": account,
         "status": account_status(account),
         "today": today_result(account, verifying=verifying),
+        "window": account_window(account),
     }

@@ -6,6 +6,7 @@ import re
 from .errors import InvalidTimeError
 
 _HM_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+_WINDOW_RE = re.compile(r"^\s*(\d{1,2}:\d{2})\s*[-–~至]\s*(\d{1,2}:\d{2})\s*$")
 
 
 def parse_hm(text: object) -> tuple[int, int]:
@@ -25,3 +26,22 @@ def parse_hm(text: object) -> tuple[int, int]:
 def to_minutes(text: object) -> int:
     hours, minutes = parse_hm(text)
     return hours * 60 + minutes
+
+
+def parse_window(text: object) -> tuple[str, str] | None:
+    """解析学校返回的打卡时段（如 '20:00-23:30'）；格式不对返回 None。"""
+    match = _WINDOW_RE.match(str(text or ""))
+    if not match:
+        return None
+    try:
+        start = parse_hm(match.group(1))
+        end = parse_hm(match.group(2))
+    except InvalidTimeError:
+        return None
+    return f"{start[0]:02d}:{start[1]:02d}", f"{end[0]:02d}:{end[1]:02d}"
+
+
+def account_checkin_window(account: dict) -> tuple[str, str] | None:
+    """返回完整且有效的账号时段。"""
+    start, end = account.get("checkin_start"), account.get("checkin_end")
+    return parse_window(f"{start}-{end}") if start and end else None

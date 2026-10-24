@@ -29,6 +29,7 @@ from .log import log_account_enabled_changed, log_event
 from .notifications import send_credential_notice
 from .ratelimit import FailureCooldown, SlidingWindow
 from .redaction import scrub_detail
+from .validate import account_checkin_window, parse_window
 
 _login_paused_until = 0.0
 _cas_gate = threading.Semaphore(cfg.config.cas_concurrency)
@@ -266,7 +267,16 @@ def verify_login(username: str, password: str, *, entry: str = ENTRY_CREATE,
     client = ZhxgClient()
     cas_login(client, username, password, entry=entry, user_id=user_id,
               account_id=account_id, ip=ip)
+    data = {}
+    try:
+        response = client.dk_status()
+        if str(response.get("code")) == OK_CODE and isinstance(response.get("data"), dict):
+            data = response["data"]
+    except Exception as error:  # noqa: BLE001 - 时段查询失败不影响已完成的登录验证
+        log_event("account.status_read_failed", level="warning", account_id=account_id,
+                  detail=scrub_detail(str(error)))
     return {
+        "data": data,
         "session": {
             "token": client.token or "",
             "casual": client.casual,
@@ -530,7 +540,7 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
         return CheckinStatus.SKIPPED, f"今日已打卡（{dksj or '—'}）", dksj
     if not data.get("kdk"):
         reason = data.get("bkyy") or "未知原因"
-        status = CheckinStatus.WAITING if "未到" in str(reason) else CheckinStatus.FAILED
+        status = CheckinStatus.WAITING if _outside_checkin_window(data) else CheckinStatus.FAILED
         return status, f"当前不可打卡：{reason}", None
 
     cached = _coords_for(account)
@@ -686,6 +696,25 @@ def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
     return {"status": CheckinStatus.FAILED, "message": message, "dksj": None}
 
 
+def _outside_checkin_window(data: dict) -> bool:
+    reason = str(data.get("bkyy") or "")
+    return not data.get("kdk") and any(text in reason for text in ("未到", "不在打卡时间", "不在时间段"))
+
+
+def _save_checkin_window(account: dict, data: dict) -> None:
+    """首次保存学校时段；时间不符时更新。"""
+    if account_checkin_window(account) and not _outside_checkin_window(data):
+        return
+    window = parse_window(data.get("dksjfw"))
+    if not window:
+        return
+    if (account.get("checkin_start"), account.get("checkin_end")) == window:
+        return
+    start, end = window
+    account["checkin_start"], account["checkin_end"] = window
+    db.update_account(account["id"], {"checkin_start": start, "checkin_end": end})
+
+
 def _attempt(account: AccountRow | dict, trigger: str) -> CheckinResult:
     run_at = to_local_iso(local_now(cfg.config.tz))
     status, message, dksj = CheckinStatus.FAILED, "", None
@@ -696,14 +725,16 @@ def _attempt(account: AccountRow | dict, trigger: str) -> CheckinResult:
             raise RuntimeError("账号已停用")
 
         client, response, code = _business_status(account)
+        data = response.get("data") or {}
         if code == NO_TASK_CODE:
             status = CheckinStatus.NO_TASK
             message = "无打卡事项"
         elif code != OK_CODE:
             raise RuntimeError(f"业务接口返回异常：{str(response)[:160]}")
         else:
+            _save_checkin_window(account, data)
             persist_state(account["id"], client)
-            outcome = _submit(client, account, response.get("data") or {})
+            outcome = _submit(client, account, data)
             if outcome is None:
                 return _defer_verification(account, run_at, trigger)
             status, message, dksj = outcome

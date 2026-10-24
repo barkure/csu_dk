@@ -8,11 +8,12 @@ from . import db
 from .checkin import ENTRY_CREATE, ENTRY_UPDATE, mark_auth_failure, verify_login
 from .clock import local_now, to_local_iso
 from .crypto import decrypt_secret, encrypt_secret
-from .domain import AuthError
+from .domain import AuthError, CheckinStatus, Trigger
 from .errors import AppError, BadRequestError
 from .locks import lock_for
 from .log import EnabledChangeSource, log_account_enabled_changed, log_event
 from .redaction import scrub_detail
+from .validate import parse_window
 
 _USERNAME_BOUND_MESSAGE = "该学号已绑定至其他用户"
 _USERNAME_BOUND_DB_ERROR = "accounts.csu_username already bound"
@@ -46,13 +47,17 @@ def _session_fields(probe: dict | None) -> dict:
     session = (probe or {}).get("session") or {}
     if not session.get("token"):
         return {}
-    return {
+    window = parse_window(((probe or {}).get("data") or {}).get("dksjfw"))
+    fields = {
         "token": session["token"],
         "casual": session["casual"],
         "cookies": session["cookies"],
         "token_at": _now_iso(),
         "auth_error": "",
     }
+    if window:
+        fields.update(checkin_start=window[0], checkin_end=window[1])
+    return fields
 
 
 def _insert_account(row: dict) -> dict:
@@ -102,6 +107,13 @@ def _create_or_update_locked(user: dict, payload: dict, *, ip: str | None,
         "enabled": int(payload.get("enabled") is not False), "dkdz": "",
         **_session_fields(probe), "created_at": now, "updated_at": now,
     })
+    data = (probe or {}).get("data") or {}
+    if data.get("sfydk"):
+        with db.transaction():
+            db.add_record(created["id"], now, Trigger.MANUAL, CheckinStatus.SKIPPED, "今日已打卡", data.get("dksj"))
+            db.update_account(created["id"], {
+                "last_run_at": now, "last_status": CheckinStatus.SKIPPED, "last_message": "今日已打卡",
+            })
     return {"account_id": created["id"], "verify": {"ok": True}}
 
 

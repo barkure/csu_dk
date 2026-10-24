@@ -145,7 +145,7 @@ def health() -> dict:
         "time": _now_iso(),
         "mail": mailer_enabled(),
         "outboundExits": exits.summary(),
-        "checkinWindow": {"start": cfg.config.checkin_window_start, "end": cfg.config.checkin_window_end},
+        "checkinStart": cfg.config.checkin_start,
     }
 
 

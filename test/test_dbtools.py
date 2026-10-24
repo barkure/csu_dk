@@ -24,6 +24,37 @@ def test_init_is_idempotent():
     assert ok and missing == []
 
 
+def test_init_adds_new_columns_without_rebuilding(tmp_path):
+    conn = sqlite3.connect(tmp_path / "old.db", isolation_level=None)
+    try:
+        conn.executescript(db._SCHEMA)
+        conn.execute("ALTER TABLE accounts DROP COLUMN checkin_start")
+        conn.execute("ALTER TABLE accounts DROP COLUMN checkin_end")
+        assert db.missing_structure(db._reference_structure(), db._structure(conn))
+
+        db._ensure_schema(conn)
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
+        assert {"checkin_start", "checkin_end"} <= columns
+        assert db.missing_structure(db._reference_structure(), db._structure(conn)) == []
+    finally:
+        conn.close()
+
+
+def test_incompatible_database_is_not_migrated(tmp_path):
+    conn = sqlite3.connect(tmp_path / "invalid.db", isolation_level=None)
+    try:
+        conn.executescript(db._SCHEMA)
+        conn.execute("ALTER TABLE accounts DROP COLUMN checkin_start")
+        conn.execute("ALTER TABLE accounts ADD COLUMN unexpected TEXT")
+        before = db._structure(conn)
+        with pytest.raises(RuntimeError):
+            db._ensure_schema(conn)
+        assert db._structure(conn) == before
+    finally:
+        conn.close()
+
+
 def test_unique_username_trigger_allows_legacy_duplicates(tmp_path):
     schema_without_trigger = re.sub(
         r"CREATE TRIGGER IF NOT EXISTS trg_accounts_unique_username(?:_update)?.*?END;\s*",

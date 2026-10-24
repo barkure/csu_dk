@@ -27,7 +27,7 @@ from .errors import AppError
 from .log import log_event
 from .notifications import retry_credential_notices
 from .redaction import scrub_detail
-from .validate import to_minutes
+from .validate import account_checkin_window, to_minutes
 
 MAX_ATTEMPTS_PER_DAY = 3
 RETRY_INTERVAL_MINUTES = 10
@@ -50,12 +50,19 @@ def _done_in_window(account: dict, start: datetime, end: datetime) -> bool:
     return bool(last_run) and start <= parse_local(last_run) <= end
 
 
-def _window_bounds(now: datetime) -> tuple[datetime, datetime]:
-    """返回包含当前日期的全局打卡窗口。"""
+def _daily_bounds(now: datetime) -> tuple[datetime, datetime]:
+    """当天开始时间至午夜前，用于执行记录统计。"""
     start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
-        minutes=to_minutes(cfg.config.checkin_window_start))
+        minutes=to_minutes(cfg.config.checkin_start))
+    return start, now.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+
+def _window_bounds(now: datetime, start_text: str, end_text: str) -> tuple[datetime, datetime]:
+    """计算学校时段，支持跨午夜。"""
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        minutes=to_minutes(start_text))
     end = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
-        minutes=to_minutes(cfg.config.checkin_window_end))
+        minutes=to_minutes(end_text))
     if end <= start:
         end += timedelta(days=1)
         if now < start:
@@ -64,9 +71,14 @@ def _window_bounds(now: datetime) -> tuple[datetime, datetime]:
     return start, end
 
 
-def _inside_window(now: datetime) -> bool:
-    start, end = _window_bounds(now)
-    return start <= now <= end
+def _account_bounds(account: dict, now: datetime) -> tuple[datetime, datetime]:
+    """返回账号时段，未知时使用当天调度范围。"""
+    window = account_checkin_window(account)
+    return _window_bounds(now, *window) if window else _daily_bounds(now)
+
+
+def _checkin_started(now: datetime) -> bool:
+    return now.hour * 60 + now.minute >= to_minutes(cfg.config.checkin_start)
 
 
 def _ready(account: dict, now: datetime, force: bool = False) -> bool:
@@ -74,14 +86,23 @@ def _ready(account: dict, now: datetime, force: bool = False) -> bool:
         return False
     if force:
         return True
-    start, end = _window_bounds(now)
-    if not start <= now <= end or _done_in_window(account, start, end):
+    if not _checkin_started(now):
         return False
+    start, end = _daily_bounds(now)
+    acct_start, acct_end = _account_bounds(account, now)
+    if not acct_start <= now <= acct_end:
+        return False
+    if _done_in_window(account, start, end):
+        return False
+    start, end = max(start, acct_start), min(end, acct_end)
     attempts = db.list_records_in_window(account["id"], Trigger.SCHEDULE,
-                                         to_local_iso(start), to_local_iso(end), MAX_ATTEMPTS_PER_DAY)
+                                         to_local_iso(start), to_local_iso(end),
+                                         MAX_ATTEMPTS_PER_DAY, exclude_waiting=True)
     if len(attempts) >= MAX_ATTEMPTS_PER_DAY:
         return False
-    if attempts and now - parse_local(attempts[0]["run_at"]) < timedelta(minutes=RETRY_INTERVAL_MINUTES):
+    recent = db.list_records_in_window(account["id"], Trigger.SCHEDULE,
+                                      to_local_iso(start), to_local_iso(end), 1)
+    if recent and now - parse_local(recent[0]["run_at"]) < timedelta(minutes=RETRY_INTERVAL_MINUTES):
         return False
     return not login_paused_until() or has_fresh_login(account)
 
@@ -195,7 +216,7 @@ def tick() -> None:
     if _lease_owner and not _holds_lease(now):
         return
     run_verifications()
-    if _inside_window(now):
+    if _checkin_started(now):
         run_batch()
     else:
         refresh_logins()

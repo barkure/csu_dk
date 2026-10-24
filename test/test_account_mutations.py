@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime
 
 import pytest
 
@@ -13,6 +14,31 @@ from app.clock import local_now, to_local_iso
 from app.crypto import encrypt_secret
 from app.errors import AppError
 from app.locks import lock_for
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_add_account_after_school_window(monkeypatch, completed):
+    from app import scheduler, views
+
+    now = "2026-10-24T23:40:00"
+    user = db.upsert_user(f"late-add-{completed}@example.com", now)
+    monkeypatch.setattr(accounts, "_now_iso", lambda: now)
+    monkeypatch.setattr(views, "_now", lambda: (now, "23:40"))
+    monkeypatch.setattr(accounts, "verify_login", lambda *_args, **_kwargs: {
+        "session": {"token": "test-token", "casual": "test", "cookies": "[]"},
+        "data": {"dksjfw": "20:00-23:30", "sfydk": completed, "dksj": "2026-10-24 21:00:00"},
+    })
+    try:
+        result = accounts.create_or_update(user, {"csuUsername": f"late-add-{completed}", "password": "test"})
+        account = db.get_account_by_id(result["account_id"])
+        assert (account["checkin_start"], account["checkin_end"]) == ("20:00", "23:30")
+        assert account["enabled"] == 1
+        assert not scheduler._ready(account, datetime.fromisoformat(now))
+        assert views.today_result(account)["label"] == ("打卡成功" if completed else "时段已结束")
+        assert len(db.list_records(account["id"])) == int(completed)
+        assert scheduler._ready(account, datetime.fromisoformat("2026-10-25T20:00:00"))
+    finally:
+        db.delete_user(user["email"])
 
 
 @pytest.fixture()

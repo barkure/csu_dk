@@ -43,6 +43,8 @@ def transaction() -> Iterator[None]:
 
 _SCHEMA = (pathlib.Path(__file__).with_name("schema.sql")).read_text()
 _ADDITIVE_TABLES = frozenset({"verifications", "credential_notices"})
+# 仅自动补齐白名单字段。
+_ADDITIVE_COLUMNS = frozenset({("accounts", "checkin_start"), ("accounts", "checkin_end")})
 
 
 def _structure(conn: sqlite3.Connection) -> dict[str, set[str]]:
@@ -74,6 +76,16 @@ def _reference_structure() -> dict[str, set[str]]:
         reference.close()
 
 
+def _is_additive_column(item: str) -> bool:
+    return tuple(item.split(".", 1)) in _ADDITIVE_COLUMNS
+
+
+def _add_columns(conn: sqlite3.Connection, items: list[str]) -> None:
+    for item in items:
+        table, column = item.split(".", 1)
+        conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" TEXT')
+
+
 def _ensure_schema(conn: sqlite3.Connection | None = None) -> None:
     conn = conn if conn is not None else _conn
 
@@ -82,6 +94,8 @@ def _ensure_schema(conn: sqlite3.Connection | None = None) -> None:
         expected = _reference_structure()
         missing = [item for item in missing_structure(expected, existing)
                    if item not in _ADDITIVE_TABLES]
+        additive = [item for item in missing if _is_additive_column(item)]
+        missing = [item for item in missing if item not in additive]
         unexpected = unexpected_structure(expected, existing)
         if missing or unexpected:
             details = []
@@ -94,6 +108,8 @@ def _ensure_schema(conn: sqlite3.Connection | None = None) -> None:
                 "请删除旧数据库并重新启动。"
             )
 
+        _add_columns(conn, additive)
+
     conn.executescript(_SCHEMA)
 
 
@@ -104,6 +120,7 @@ _UPDATABLE = {
     "password_enc", "enabled", "jd", "wd", "dkdz",
     "casual", "token", "cookies", "token_at",
     "last_run_at", "last_status", "last_message", "auth_error", "updated_at",
+    "checkin_start", "checkin_end",
 }
 
 
@@ -376,16 +393,17 @@ def set_auth_error(account_id: int, kind: AuthError | str) -> bool:
 
 def insert_account(row: dict) -> dict | None:
     payload = {"token": "", "casual": None, "cookies": None, "token_at": None,
+               "checkin_start": None, "checkin_end": None,
                "auth_error": "", "dkdz": "", "jd": None, "wd": None}
     payload.update(row)
     payload = _seal(payload)
     _exec(
         """INSERT INTO accounts (user_id, csu_username, password_enc, enabled,
                                  jd, wd, dkdz, token, casual, cookies, token_at, auth_error,
-                                 created_at, updated_at)
+                                 created_at, updated_at, checkin_start, checkin_end)
            VALUES (:user_id, :csu_username, :password_enc, :enabled,
                    :jd, :wd, :dkdz, :token, :casual, :cookies, :token_at, :auth_error,
-                   :created_at, :updated_at)""",
+                   :created_at, :updated_at, :checkin_start, :checkin_end)""",
         payload,
     )
     return get_account_by_username(row["user_id"], row["csu_username"])
@@ -453,11 +471,13 @@ def list_records(account_id: int, limit: int = 30) -> list[dict]:
     return _all("SELECT * FROM records WHERE account_id = ? ORDER BY id DESC LIMIT ?", (account_id, limit))
 
 
-def list_records_in_window(account_id: int, trigger: str, start: str, end: str, limit: int) -> list[dict]:
+def list_records_in_window(account_id: int, trigger: str, start: str, end: str, limit: int,
+                           *, exclude_waiting: bool = False) -> list[dict]:
     """按触发方式和时间窗筛选记录，再限制条数。"""
     return _all("""SELECT * FROM records
                    WHERE account_id = ? AND trigger = ? AND run_at >= ? AND run_at <= ?
-                   ORDER BY id DESC LIMIT ?""", (account_id, trigger, start, end, limit))
+                   AND (? = 0 OR status != 'waiting')
+                   ORDER BY id DESC LIMIT ?""", (account_id, trigger, start, end, exclude_waiting, limit))
 
 
 def delete_user(email: str) -> None:

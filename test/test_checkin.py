@@ -158,15 +158,16 @@ def test_batch_retries_after_pause_ends(user, monkeypatch):
     assert len(scheduler.run_batch(accounts=[account])) == 1
 
 
-def test_inside_window():
-    from app.scheduler import _inside_window
+def test_checkin_started():
+    from app.scheduler import _checkin_started
 
-    assert _inside_window(datetime(2026, 9, 12, 21, 0)) is True       # noqa: DTZ001
-    assert _inside_window(datetime(2026, 9, 12, 19, 59)) is False     # noqa: DTZ001
-    assert _inside_window(datetime(2026, 9, 12, 23, 31)) is False     # noqa: DTZ001
+    assert _checkin_started(datetime(2026, 9, 12, 21, 0)) is True       # noqa: DTZ001
+    assert _checkin_started(datetime(2026, 9, 12, 18, 0)) is True       # noqa: DTZ001
+    assert _checkin_started(datetime(2026, 9, 12, 17, 59)) is False     # noqa: DTZ001
+    assert _checkin_started(datetime(2026, 9, 12, 23, 31)) is True     # noqa: DTZ001
 
 
-def test_tick_checkins_inside_window_and_refreshes_outside(monkeypatch):
+def test_tick_checkins_checkin_started_and_refreshes_outside(monkeypatch):
     from app import scheduler
 
     monkeypatch.setattr(scheduler, "_lease_owner", None)
@@ -1151,17 +1152,16 @@ def test_scheduled_checkin_still_refuses_a_disabled_account(user, monkeypatch):
     assert client.submitted is None
 
 
-def test_inside_window_handles_cross_midnight(monkeypatch):
-    from app.scheduler import _inside_window, _window_bounds
+def test_midnight_refreshes_tokens_and_personal_window_can_cross_midnight(monkeypatch):
+    from app.scheduler import _checkin_started, _window_bounds
 
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "23:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "01:00")
-    assert _inside_window(datetime(2026, 9, 12, 23, 30)) is True     # noqa: DTZ001
-    assert _inside_window(datetime(2026, 9, 13, 0, 30)) is True      # noqa: DTZ001
-    assert _inside_window(datetime(2026, 9, 13, 2, 0)) is False      # noqa: DTZ001
-    assert _inside_window(datetime(2026, 9, 13, 22, 0)) is False     # noqa: DTZ001
+    monkeypatch.setattr(cfg.config, "checkin_start", "23:00")
+    assert _checkin_started(datetime(2026, 9, 12, 23, 30)) is True     # noqa: DTZ001
+    assert _checkin_started(datetime(2026, 9, 13, 0, 30)) is False      # noqa: DTZ001
+    assert _checkin_started(datetime(2026, 9, 13, 2, 0)) is False      # noqa: DTZ001
+    assert _checkin_started(datetime(2026, 9, 13, 22, 0)) is False     # noqa: DTZ001
 
-    start, end = _window_bounds(datetime(2026, 9, 13, 0, 30))        # noqa: DTZ001
+    start, end = _window_bounds(datetime(2026, 9, 13, 0, 30), "23:00", "01:00")        # noqa: DTZ001
     assert (start.day, start.hour) == (12, 23), "00:30 时窗口起点应是昨晚 23:00"
     assert (end.day, end.hour) == (13, 1), "00:30 时窗口终点应是今天 01:00"
 
@@ -1169,8 +1169,7 @@ def test_inside_window_handles_cross_midnight(monkeypatch):
 def test_cross_midnight_window_does_not_run_twice(user, monkeypatch):
     from app import scheduler
 
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "23:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "01:00")
+    monkeypatch.setattr(cfg.config, "checkin_start", "23:00")
     now = datetime(2026, 9, 13, 0, 30)  # noqa: DTZ001
     account = make_account(user["id"])
     db.update_account(account["id"], {
@@ -1226,8 +1225,7 @@ def test_engine_records_no_task_without_disabling_account(user, monkeypatch):
 def test_no_task_settles_only_the_current_window(user, monkeypatch):
     from app import scheduler
 
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "20:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "23:30")
+    monkeypatch.setattr(cfg.config, "checkin_start", "20:00")
     account = make_account(user["id"])
     db.update_account(account["id"], {"last_status": "no_task", "last_run_at": "2026-09-22T20:13:35"})
     db.add_record(account["id"], "2026-09-22T20:13:35", "schedule", "no_task", "无打卡事项")
@@ -1241,8 +1239,7 @@ def test_manual_attempts_do_not_extend_scheduled_retries(user, monkeypatch):
     """手动记录不影响自动尝试次数的统计。"""
     from app import scheduler
 
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "20:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "23:30")
+    monkeypatch.setattr(cfg.config, "checkin_start", "20:00")
     account = make_account(user["id"])
     for minute in (1, 11, 21):
         db.add_record(account["id"], f"2026-09-22T20:{minute:02d}:00", "schedule", "failed", "失败")
@@ -1256,8 +1253,7 @@ def test_manual_attempts_do_not_extend_scheduled_retries(user, monkeypatch):
 def test_scheduled_retry_gap_uses_scheduled_records(user, monkeypatch):
     from app import scheduler
 
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "20:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "23:30")
+    monkeypatch.setattr(cfg.config, "checkin_start", "20:00")
     account = make_account(user["id"])
     db.add_record(account["id"], "2026-09-22T20:00:00", "schedule", "failed", "失败")
     for minute in (1, 2, 4):
@@ -1266,6 +1262,140 @@ def test_scheduled_retry_gap_uses_scheduled_records(user, monkeypatch):
 
     assert scheduler._ready(account, datetime(2026, 9, 22, 20, 5, 0)) is False  # noqa: DTZ001
     assert scheduler._ready(account, datetime(2026, 9, 22, 20, 11, 0)) is True  # noqa: DTZ001
+
+
+def test_save_checkin_windows_defer_accounts_until_their_own_start(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_start", "18:00")
+    account = make_account(user["id"])
+    db.update_account(account["id"], {"checkin_start": "20:00", "checkin_end": "23:30"})
+    account = db.get_account_by_id(account["id"])
+
+    assert scheduler._ready(account, datetime(2026, 9, 22, 19, 30)) is False  # noqa: DTZ001
+    assert scheduler._ready(account, datetime(2026, 9, 22, 20, 0)) is True    # noqa: DTZ001
+
+
+def test_waiting_before_own_window_does_not_consume_attempts(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_start", "18:00")
+    account = make_account(user["id"])
+    db.update_account(account["id"], {"checkin_start": "20:00", "checkin_end": "23:30"})
+    db.add_record(account["id"], "2026-09-22T19:28:00", "schedule", "waiting", "未到打卡时间")
+    account = db.get_account_by_id(account["id"])
+
+    assert scheduler._ready(account, datetime(2026, 9, 22, 20, 0)) is True  # noqa: DTZ001
+
+
+def test_failures_before_account_window_do_not_exhaust_retries(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_start", "18:00")
+    account = make_account(user["id"])
+    account.update(checkin_start="20:00", checkin_end="23:30")
+    for minute in (0, 10, 20):
+        db.add_record(account["id"], f"2026-09-22T19:{minute:02}:00", "schedule", "failed", "失败")
+    assert scheduler._ready(account, datetime.fromisoformat("2026-09-22T20:05:00"))
+
+
+@pytest.mark.parametrize("start,end", [("20:00", None), (None, "20:00"), ("99:00", "23:30")])
+def test_invalid_account_window_uses_global_window(user, monkeypatch, start, end):
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_start", "18:00")
+    account = make_account(user["id"])
+    account.update(checkin_start=start, checkin_end=end)
+    assert scheduler._ready(account, datetime.fromisoformat("2026-09-22T19:00:00"))
+
+
+def test_account_without_known_window_uses_global_window(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_start", "18:00")
+    account = make_account(user["id"])
+
+    assert scheduler._ready(account, datetime(2026, 9, 22, 19, 30)) is True   # noqa: DTZ001
+    assert scheduler._ready(account, datetime(2026, 9, 22, 17, 59)) is False  # noqa: DTZ001
+
+
+def test_personal_end_replaces_global_deadline(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_start", "18:00")
+    account = make_account(user["id"])
+    account.update(checkin_start="20:00", checkin_end="23:50")
+    assert scheduler._ready(account, datetime.fromisoformat("2026-10-24T23:40:00"))
+    assert not scheduler._ready(account, datetime.fromisoformat("2026-10-24T23:51:00"))
+    assert not scheduler._ready(account, datetime.fromisoformat("2026-10-25T00:00:00"))
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_verify_login_reads_school_status_without_submitting(monkeypatch, fails):
+    from unittest.mock import Mock
+
+    client = Mock(token="token", casual="casual")
+    client.cookies_json.return_value = "[]"
+    if fails:
+        client.dk_status.side_effect = TimeoutError("timeout")
+    else:
+        client.dk_status.return_value = {"code": "200", "data": {"dksjfw": "20:00-23:30"}}
+    monkeypatch.setattr(checkin, "ZhxgClient", lambda: client)
+    monkeypatch.setattr(checkin, "cas_login", lambda *_args, **_kwargs: None)
+    result = checkin.verify_login("test-user", "test-password")
+    assert result["session"]["token"] == "token"
+    assert result["data"] == ({} if fails else {"dksjfw": "20:00-23:30"})
+    client.submit_dk.assert_not_called()
+
+
+def test_checkin_learns_school_window(user, monkeypatch):
+    client = EngineClient({"sfydk": 1, "dksj": "2026-09-12 20:18:43", "dksjfw": "20:00-23:30"})
+    account = engine_account(user, monkeypatch, client)
+
+    result = checkin.run_checkin(account, "schedule")
+
+    assert result["status"] == "skipped"
+    saved = db.get_account_by_id(account["id"])
+    assert (saved["checkin_start"], saved["checkin_end"]) == ("20:00", "23:30")
+
+
+def test_checkin_ignores_unparseable_window(user, monkeypatch):
+    client = EngineClient({"sfydk": 1, "dksj": "2026-09-12 20:18:43", "dksjfw": "待定"})
+    account = engine_account(user, monkeypatch, client)
+
+    checkin.run_checkin(account, "schedule")
+
+    saved = db.get_account_by_id(account["id"])
+    assert (saved["checkin_start"], saved["checkin_end"]) == (None, None)
+
+
+@pytest.mark.parametrize("reason", ["未到打卡时间", "不在打卡时间段", "不在时间段内"])
+def test_school_time_rejection_updates_window(user, monkeypatch, reason):
+    client = EngineClient({"sfydk": False, "kdk": False, "bkyy": reason, "dksjfw": "20:00-23:30"})
+    account = engine_account(user, monkeypatch, client)
+    db.update_account(account["id"], {"checkin_start": "18:00", "checkin_end": "23:30"})
+    result = checkin.run_checkin(account, "schedule")
+    assert result["status"] == "waiting"
+    assert db.get_account_by_id(account["id"])["checkin_start"] == "20:00"
+
+
+def test_known_window_is_preserved_without_time_rejection(user, monkeypatch):
+    client = EngineClient({"sfydk": True, "dksjfw": "19:00-23:30"})
+    account = engine_account(user, monkeypatch, client)
+    db.update_account(account["id"], {"checkin_start": "20:00", "checkin_end": "23:30"})
+    checkin.run_checkin(account, "schedule")
+    assert db.get_account_by_id(account["id"])["checkin_start"] == "20:00"
+
+
+def test_waiting_records_do_not_exhaust_retries(user, monkeypatch):
+    from app import scheduler
+
+    monkeypatch.setattr(cfg.config, "checkin_start", "18:00")
+    account = make_account(user["id"])
+    for minute in (0, 10, 20):
+        db.add_record(account["id"], f"2026-09-22T20:{minute:02}:00", "schedule", "waiting", "未到时间")
+    assert not scheduler._ready(account, datetime.fromisoformat("2026-09-22T20:25:00"))
+    assert scheduler._ready(account, datetime.fromisoformat("2026-09-22T20:30:00"))
 
 
 def test_engine_still_fails_on_unknown_business_code(user, monkeypatch):

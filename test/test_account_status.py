@@ -12,9 +12,19 @@ from app.csu.cas import CasIpFrozenError
 from app.csu.zhxg import ZhxgError
 from app.errors import SecretDecryptError
 from app.main import app as fastapi_app
-from app.views import account_status, today_result, window_passed, window_state
+from app.views import _account_window_state, account_status, today_result
 
 USER_EMAIL = "status-test@example.com"
+
+
+@pytest.mark.parametrize("last_status", [None, "waiting"])
+def test_today_result_follows_account_window(monkeypatch, last_status):
+    monkeypatch.setattr(cfg.config, "checkin_start", "18:00")
+    account = {"enabled": 1, "checkin_start": "20:00", "checkin_end": "23:00",
+               "last_status": last_status, "last_run_at": "2026-10-24T18:00:00"}
+    for time, label in [("19:00", "未到时间"), ("20:00", "排队打卡中"), ("23:10", "时段已结束")]:
+        monkeypatch.setattr("app.views._now", lambda time=time: (f"2026-10-24T{time}:00", time))
+        assert today_result(account)["label"] == label
 
 STATUS_CASES = [
     ("", "正常", "ok"),
@@ -63,40 +73,12 @@ def test_four_states_and_colors(kind, text, cls):
     assert account_status({"auth_error": kind}) == {"text": text, "cls": cls}
 
 
-def test_window_passed_compares_minutes_not_strings(monkeypatch):
-    def at(hhmm: str) -> None:
-        monkeypatch.setattr("app.views._now", lambda: (f"2026-09-15T{hhmm}:00", hhmm))
-
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "7:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "9:00")
-    at("08:00")
-    assert window_passed() is False, "结束前"
-    at("09:00")
-    assert window_passed() is False, "恰好结束仍算在窗口内（与调度器闭区间一致）"
-    at("09:01")
-    assert window_passed() is True, "结束后（不补零终点 9:00 不能被字符串比较误判）"
-
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "8:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "10:00")
-    at("12:00")
-    assert window_passed() is True, "不补零起点 8:00–10:00 在中午应已结束，不能误判成跨午夜"
-
-
-def test_window_passed_cross_midnight_always_open(monkeypatch):
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "23:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "1:00")
-    for moment in ("23:30", "00:30", "12:00"):
-        monkeypatch.setattr("app.views._now", lambda m=moment: (f"2026-09-15T{m}:00", m))
-        assert window_passed() is False, f"{moment} 跨午夜窗口恒算今天稍后还有机会"
-
-
-def test_window_state_has_three_phases(monkeypatch):
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "20:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "23:30")
-    for moment, expected in (("19:59", "before"), ("20:00", "inside"),
-                             ("23:30", "inside"), ("23:31", "after")):
-        monkeypatch.setattr("app.views._now", lambda m=moment: (f"2026-09-15T{m}:00", m))
-        assert window_state() == expected, moment
+def test_window_state_uses_only_global_start(monkeypatch):
+    monkeypatch.setattr(cfg.config, "checkin_start", "18:00")
+    for moment, expected in (("00:30", "before"), ("17:59", "before"),
+                             ("18:00", "inside"), ("23:59", "inside")):
+        monkeypatch.setattr("app.views._now", lambda m=moment: (f"2026-10-24T{m}:00", m))
+        assert _account_window_state({}) == expected
 
 
 def test_account_still_queued_inside_the_window(monkeypatch):
@@ -107,12 +89,12 @@ def test_account_still_queued_inside_the_window(monkeypatch):
     assert today_result(account) == {"label": "排队打卡中", "cls": ""}
 
 
-def test_today_result_marks_failed_after_window_with_unpadded_end(monkeypatch):
+def test_today_result_after_personal_window(monkeypatch):
     monkeypatch.setattr("app.views._now", lambda: ("2026-09-15T12:00:00", "12:00"))
-    monkeypatch.setattr(cfg.config, "checkin_window_start", "8:00")
-    monkeypatch.setattr(cfg.config, "checkin_window_end", "10:00")
-    account = {"enabled": 1, "last_status": None, "last_run_at": None}
-    assert today_result(account) == {"label": "打卡失败", "cls": "err"}
+    monkeypatch.setattr(cfg.config, "checkin_start", "8:00")
+    account = {"enabled": 1, "last_status": None, "last_run_at": None,
+               "checkin_start": "8:00", "checkin_end": "10:00"}
+    assert today_result(account) == {"label": "时段已结束", "cls": ""}
 
 
 def test_status_ignores_last_checkin_result_and_login_state():
@@ -124,6 +106,7 @@ def test_status_ignores_last_checkin_result_and_login_state():
 
 
 def test_yesterday_no_task_does_not_count_as_today(monkeypatch):
+    monkeypatch.setattr(cfg.config, "checkin_start", "20:00")
     monkeypatch.setattr("app.views._now", lambda: ("2026-09-15T19:00:00", "19:00"))
     account = {"enabled": 1, "last_status": "no_task", "last_run_at": "2026-09-14T20:00:00"}
     assert today_result(account) == {"label": "未到时间", "cls": ""}

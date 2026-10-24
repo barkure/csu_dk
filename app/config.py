@@ -89,8 +89,7 @@ class Settings(BaseSettings):
                                   validation_alias="CSU_DK_CRED_FAIL_MAX_IP")
     cred_fail_cooldown_seconds: int = Field(default=900, ge=1, le=86_400,
                                            validation_alias="CSU_DK_CRED_FAIL_COOLDOWN")
-    checkin_window_start: str = "18:00"
-    checkin_window_end: str = "23:30"
+    checkin_start: str = "18:00"
     checkin_jitter_meters: int = Field(default=50, ge=0, le=300)
 
     # 仅信任明确配置的代理，由 Uvicorn 解析 XFF。
@@ -212,7 +211,7 @@ class Settings(BaseSettings):
             raise ValueError(f"CSU_DK_TZ 不是合法时区：{value}") from error
         return value
 
-    @field_validator("checkin_window_start", "checkin_window_end")
+    @field_validator("checkin_start")
     @classmethod
     def _valid_checkin_time(cls, value: str) -> str:
         parse_hm(value)
