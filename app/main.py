@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import accounts as accounts_service
-from . import auth, db, exits, netinfo, ui
+from . import auth, db, exits, netinfo, stats, ui
 from . import config as cfg
 from .checkin import has_fresh_login, is_verifying, relogin, run_checkin
 from .clock import local_now, to_local_iso
@@ -147,6 +147,11 @@ def health() -> dict:
         "outboundExits": exits.summary(),
         "checkinWindow": {"start": cfg.config.checkin_window_start, "end": cfg.config.checkin_window_end},
     }
+
+
+@app.get("/api/stats")
+def public_stats() -> dict:
+    return stats.snapshot()
 
 
 @app.post("/api/auth/request-code")

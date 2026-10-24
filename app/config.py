@@ -89,7 +89,7 @@ class Settings(BaseSettings):
                                   validation_alias="CSU_DK_CRED_FAIL_MAX_IP")
     cred_fail_cooldown_seconds: int = Field(default=900, ge=1, le=86_400,
                                            validation_alias="CSU_DK_CRED_FAIL_COOLDOWN")
-    checkin_window_start: str = "20:00"
+    checkin_window_start: str = "18:00"
     checkin_window_end: str = "23:30"
     checkin_jitter_meters: int = Field(default=50, ge=0, le=300)
 

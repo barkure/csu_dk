@@ -41,7 +41,7 @@ def login(client: TestClient, email: str) -> None:
 def test_health(client):
     body = client.get("/api/health").json()
     assert body["ok"] is True
-    assert body["checkinWindow"] == {"start": "20:00", "end": "23:30"}
+    assert body["checkinWindow"] == {"start": "18:00", "end": "23:30"}
     assert body["mail"] is False
     assert body["outboundExits"] == {"healthy": 2, "total": 2}
 
