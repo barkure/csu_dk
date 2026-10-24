@@ -19,16 +19,17 @@ uv run python -m app
 ```text
 .
 ├── app/
-│   ├── main.py / ui.py        API、网页路由与应用入口
-│   ├── accounts.py / auth.py  托管账号与邮箱登录
-│   ├── checkin.py             学校登录与打卡流程
-│   ├── scheduler.py           自动打卡、重试与调度租约
-│   ├── buildings.py           宿舍定位与坐标缓存
-│   ├── db.py / schema.sql     SQLite 数据访问与结构
+│   ├── main.py / ui.py        API 与网页入口
+│   ├── accounts.py / auth.py  账号管理与邮箱登录
+│   ├── checkin.py             学校登录与打卡
+│   ├── scheduler.py           自动调度与重试
+│   ├── stats.py               公开统计
+│   ├── buildings.py           楼栋定位与坐标缓存
+│   ├── db.py / schema.sql     数据访问与表结构
 │   ├── config.py / crypto.py  配置与凭据加密
 │   ├── csu/                   学校接口客户端
-│   ├── templates/             页面模板
-│   └── static/                前端样式与脚本
+│   ├── templates/             页面与邮件模板
+│   └── static/                样式与脚本
 ├── test/                      测试
 └── tools/                     工具
 ```
