@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from . import accounts as accounts_service
-from . import auth, db, netinfo
+from . import auth, db, mfa, netinfo
 from . import config as cfg
 from .checkin import relogin, run_checkin
 from .domain import CheckinStatus, Trigger
@@ -261,6 +261,50 @@ def ui_delete(request: Request, account_id: int):
         return _to_login(request)
     accounts_service.delete(user, account_id)
     return _render(request, "partials/accounts.html", _context(user))
+
+
+def _mfa_page(request: Request, account_id: int, message: str = "", ok: bool = True):
+    user = _user(request)
+    if not user:
+        return _to_login(request)
+    account = db.get_account(user["id"], account_id)
+    if not account:
+        raise AppError("账号不存在", status=404, expose=True)
+    return _render(request, "mfa.html", {
+        "account": account, "ready": mfa.ready(account_id), "msg": scrub_optional(message),
+        "msg_kind": "ok" if ok else "err",
+    })
+
+
+@router.get("/ui/accounts/{account_id}/mfa", response_class=HTMLResponse)
+def ui_mfa(request: Request, account_id: int):
+    return _mfa_page(request, account_id)
+
+
+@router.post("/ui/accounts/{account_id}/mfa/{action}", response_class=HTMLResponse)
+def ui_mfa_action(request: Request, account_id: int, action: str,
+                  code: str = Form(""), trust: bool = Form(False)):
+    user = _user(request)
+    if not user:
+        return _to_login(request)
+    account = db.get_account(user["id"], account_id)
+    if not account:
+        raise AppError("账号不存在", status=404, expose=True)
+    try:
+        if action == "begin":
+            result = mfa.begin(account, ip=netinfo.client_ip(request))
+        elif action == "send":
+            result = mfa.send_code(account)
+        elif action == "verify":
+            result = mfa.finish(account, code, trust)
+        else:
+            raise AppError("操作不存在", status=404, expose=True)
+    except AppError as error:
+        result = {"ok": False, "message": error.message}
+    except Exception as error:  # noqa: BLE001 - avoid leaking the school session in the page
+        print(f"[mfa] school request failed ({type(error).__name__})", flush=True)
+        result = {"ok": False, "message": "学校连接暂时失败，请稍后重试；未恢复自动排期"}
+    return _mfa_page(request, account_id, result["message"], result["ok"])
 
 
 @router.get("/ui/accounts/{account_id}/records", response_class=HTMLResponse)

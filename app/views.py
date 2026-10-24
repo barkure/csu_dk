@@ -80,6 +80,7 @@ AUTH_STATUS = {
     AuthError.BAD_CREDENTIALS: ("密码错误", "err"),
     AuthError.LOCKED: ("账号锁定", "err"),
     AuthError.OTHER: ("其他故障", "err"),
+    AuthError.MFA_REQUIRED: ("待短信认证", "err"),
 }
 
 

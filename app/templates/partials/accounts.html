@@ -39,6 +39,7 @@
               <button class="plain" hx-get="/ui/form?edit={{ a.id }}" hx-target="#form-card"
                     hx-swap="outerHTML show:top showTarget:body">编辑账号</button>
               <button class="plain" hx-post="/ui/accounts/{{ a.id }}/relogin" hx-target="#accounts-card" hx-swap="outerHTML">重新上号</button>
+              <a class="plain" href="/ui/accounts/{{ a.id }}/mfa">继续学校认证</a>
               <button class="plain" hx-get="/ui/accounts/{{ a.id }}/records" hx-target="#records-card"
                     hx-swap="outerHTML show:top showTarget:#records-card">历史记录</button>
               <button class="plain danger" hx-post="/ui/accounts/{{ a.id }}/delete" hx-target="#accounts-card" hx-swap="outerHTML"

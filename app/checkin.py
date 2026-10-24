@@ -11,7 +11,7 @@ from . import buildings, db, exits
 from . import config as cfg
 from .clock import local_now, parse_local, to_local_iso
 from .crypto import decrypt_secret
-from .csu.cas import CasIpFrozenError
+from .csu.cas import CasIpFrozenError, CasMfaRequired
 from .csu.cas import classify_error as classify_cas_error
 from .csu.zhxg import ZhxgClient, ZhxgError
 from .domain import DAY_SETTLED, AccountRow, AuthError, CheckinResult, CheckinStatus, Trigger
@@ -299,6 +299,7 @@ def _decrypt_password(account: dict) -> str:
 
 
 _CAS_FAILURE_KINDS = {
+    "mfa": AuthError.MFA_REQUIRED,
     "badCredentials": AuthError.BAD_CREDENTIALS,
     "locked": AuthError.LOCKED,
     "captcha": AuthError.OTHER,
@@ -367,8 +368,13 @@ def _login(account: dict, *, entry: str = ENTRY_CHECKIN, ip: str | None = None) 
         password = _decrypt_password(account)
     except SecretDecryptError:
         password = None
-    cas_login(client, account["csu_username"], password, entry=entry,
-              user_id=account.get("user_id"), account_id=account.get("id"), ip=ip)
+    try:
+        cas_login(client, account["csu_username"], password, entry=entry,
+                  user_id=account.get("user_id"), account_id=account.get("id"), ip=ip)
+    except CasMfaRequired as error:
+        from .mfa import remember
+        remember(account["id"], client, error)
+        raise
     persist_state(account["id"], client)
     return client
 

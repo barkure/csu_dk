@@ -22,7 +22,7 @@ from .checkin import (
     sweep_login_state,
 )
 from .clock import local_now, parse_local, to_local_iso
-from .domain import DAY_SETTLED, Trigger
+from .domain import DAY_SETTLED, AuthError, Trigger
 from .errors import AppError
 from .log import log_event
 from .notifications import retry_credential_notices
@@ -82,6 +82,8 @@ def _checkin_started(now: datetime) -> bool:
 
 
 def _ready(account: dict, now: datetime, force: bool = False) -> bool:
+    if account.get("auth_error") == AuthError.MFA_REQUIRED:
+        return False
     if is_verifying(account["id"]):
         return False
     if force:
