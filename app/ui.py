@@ -215,6 +215,24 @@ def ui_toggle(request: Request, account_id: int, open: str = ""):
     return _render(request, "partials/accounts.html", _context(user, open_id=int(open) if open.isdigit() else None))
 
 
+@router.post("/ui/accounts/{account_id}/not-before", response_class=HTMLResponse)
+def ui_not_before(request: Request, account_id: int,
+                  not_before: str = Form("", alias="notBefore"), open: str = ""):
+    user = _user(request)
+    if not user:
+        return _to_login(request)
+    message = ""
+    try:
+        accounts_service.update(user, account_id, {"notBefore": not_before})
+    except AppError as error:
+        message = error.message
+    response = _render(request, "partials/accounts.html",
+                       _context(user, open_id=int(open) if open.isdigit() else None))
+    if message:
+        response.headers["X-Not-Before-Error"] = json.dumps(message)
+    return response
+
+
 @router.post("/ui/accounts/{account_id}/run", response_class=HTMLResponse)
 def ui_run(request: Request, account_id: int):
     user = _user(request)

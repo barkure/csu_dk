@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   auth_error    TEXT NOT NULL DEFAULT '',
   checkin_start      TEXT,
   checkin_end        TEXT,
+  not_before        TEXT,
   UNIQUE(user_id, csu_username)
 );
 CREATE TABLE IF NOT EXISTS login_codes (
@@ -56,6 +57,14 @@ CREATE TABLE IF NOT EXISTS credential_notices (
   account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
   attempts   INTEGER NOT NULL DEFAULT 0,
   next_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS schedule_notices (
+  account_id    INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  not_before    TEXT NOT NULL,
+  checkin_start TEXT NOT NULL,
+  checkin_end   TEXT NOT NULL,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  next_at       TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash  TEXT PRIMARY KEY,

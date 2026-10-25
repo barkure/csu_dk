@@ -12,8 +12,9 @@ from .domain import AuthError, CheckinStatus, Trigger
 from .errors import AppError, BadRequestError
 from .locks import lock_for
 from .log import EnabledChangeSource, log_account_enabled_changed, log_event
+from .notifications import reset_not_before
 from .redaction import scrub_detail
-from .validate import parse_window
+from .validate import not_before_error, parse_hm, parse_window
 
 _USERNAME_BOUND_MESSAGE = "该学号已绑定至其他用户"
 _USERNAME_BOUND_DB_ERROR = "accounts.csu_username already bound"
@@ -97,15 +98,21 @@ def _create_or_update_locked(user: dict, payload: dict, *, ip: str | None,
     if db.count_accounts(user["id"]) >= cfg.config.max_accounts_per_user:
         raise BadRequestError(f"最多只能托管 {cfg.config.max_accounts_per_user} 个账号，请先删除不用的")
 
+    not_before = _not_before_fields(payload)
     probe = _probe(csu_username, password, None, entry=ENTRY_CREATE, user_id=user["id"], ip=ip)
     if db.account_username_taken(csu_username):
         raise AppError(_USERNAME_BOUND_MESSAGE, status=409, expose=True)
+
+    session_fields = _session_fields(probe)
+    error = not_before_error({**session_fields, **not_before})
+    if error:
+        raise BadRequestError(error)
 
     now = _now_iso()
     created = _insert_account({
         "user_id": user["id"], "csu_username": csu_username, "password_enc": encrypt_secret(password),
         "enabled": int(payload.get("enabled") is not False), "dkdz": "",
-        **_session_fields(probe), "created_at": now, "updated_at": now,
+        **session_fields, **not_before, "created_at": now, "updated_at": now,
     })
     data = (probe or {}).get("data") or {}
     if data.get("sfydk"):
@@ -132,7 +139,7 @@ def _must_account(user: dict, account_id: int) -> dict:
 
 def _update_locked(account: dict, payload: dict, *, ip: str | None, source: EnabledChangeSource,
                     verify_saved_password: bool = False) -> None:
-    fields: dict = {}
+    fields: dict = _not_before_fields(payload)
     if payload.get("enabled") is not None:
         fields["enabled"] = int(bool(payload["enabled"]))
 
@@ -151,14 +158,32 @@ def _update_locked(account: dict, payload: dict, *, ip: str | None, source: Enab
         fields.update(_session_fields(probe) or {"auth_error": ""})
         if probe is not None and _recovering_from_bad_credentials(account, payload):
             fields["enabled"] = 1
+    if "not_before" in fields:
+        error = not_before_error({**account, **fields})
+        if error:
+            raise BadRequestError(error)
     _save_changes(account, fields, source)
+
+
+def _not_before_fields(payload: dict) -> dict:
+    if "notBefore" not in payload:
+        return {}
+    value = str(payload.get("notBefore") or "").strip()
+    if value:
+        hours, minutes = parse_hm(value)
+        value = f"{hours:02d}:{minutes:02d}"
+    return {"not_before": value or None}
 
 
 def _save_changes(account: dict, fields: dict, source: EnabledChangeSource) -> None:
     changes = {key: value for key, value in fields.items() if value != account.get(key)}
     if not changes:
         return
-    db.update_account(account["id"], {**changes, "updated_at": _now_iso()})
+    with db.transaction():
+        reset = reset_not_before(account, changes)
+        db.update_account(account["id"], {**changes, "updated_at": _now_iso()})
+    if reset:
+        log_event("account.not_before_reset", account_id=account["id"], not_before=account["not_before"])
     if "enabled" in changes:
         log_account_enabled_changed(user_id=account["user_id"], account_id=account["id"],
                                     username=account.get("csu_username") or "",

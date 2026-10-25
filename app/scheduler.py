@@ -25,9 +25,9 @@ from .clock import local_now, parse_local, to_local_iso
 from .domain import DAY_SETTLED, Trigger
 from .errors import AppError
 from .log import log_event
-from .notifications import retry_credential_notices
+from .notifications import retry_credential_notices, retry_schedule_notices
 from .redaction import scrub_detail
-from .validate import account_checkin_window, to_minutes
+from .validate import account_checkin_window, before_account_start, to_minutes
 
 MAX_ATTEMPTS_PER_DAY = 3
 RETRY_INTERVAL_MINUTES = 10
@@ -86,7 +86,7 @@ def _ready(account: dict, now: datetime, force: bool = False) -> bool:
         return False
     if force:
         return True
-    if not _checkin_started(now):
+    if not _checkin_started(now) or before_account_start(account, now.strftime("%H:%M")):
         return False
     start, end = _daily_bounds(now)
     acct_start, acct_end = _account_bounds(account, now)
@@ -221,6 +221,7 @@ def tick() -> None:
     else:
         refresh_logins()
     retry_credential_notices()
+    retry_schedule_notices()
 
 
 def start_scheduler() -> BackgroundScheduler | None:

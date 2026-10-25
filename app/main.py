@@ -39,6 +39,7 @@ class AccountBody(BaseModel):
     password: str | None = None
     enabled: bool | None = None
     runNow: bool = False
+    notBefore: str | None = None
 
 
 APP_DIR = pathlib.Path(__file__).resolve().parent
@@ -69,6 +70,7 @@ def _public_account(account: dict) -> dict:
         "id": account["id"],
         "csuUsername": account["csu_username"],
         "enabled": bool(account["enabled"]),
+        "notBefore": account.get("not_before"),
         "needsReauth": bool(account["auth_error"]),
         "dkdz": account["dkdz"] or "",
         "online": has_fresh_login(account),
@@ -198,7 +200,7 @@ def list_accounts(request: Request) -> dict:
 
 @app.post("/api/accounts")
 def create_account(request: Request, payload: AccountBody | None = None) -> dict:
-    fields = payload.model_dump() if payload else {}
+    fields = payload.model_dump(exclude_unset=True) if payload else {}
     user = _current_user(request)
     result = accounts_service.create_or_update(user, fields, ip=netinfo.client_ip(request))
     account_id = result["account_id"]
@@ -212,7 +214,7 @@ def create_account(request: Request, payload: AccountBody | None = None) -> dict
 @app.patch("/api/accounts/{account_id}")
 def patch_account(request: Request, account_id: int, payload: AccountBody | None = None) -> dict:
     user = _current_user(request)
-    accounts_service.update(user, account_id, payload.model_dump() if payload else {},
+    accounts_service.update(user, account_id, payload.model_dump(exclude_unset=True) if payload else {},
                             ip=netinfo.client_ip(request))
     return {"account": _public_account(_must_account(user["id"], account_id))}
 

@@ -30,12 +30,16 @@ def test_init_adds_new_columns_without_rebuilding(tmp_path):
         conn.executescript(db._SCHEMA)
         conn.execute("ALTER TABLE accounts DROP COLUMN checkin_start")
         conn.execute("ALTER TABLE accounts DROP COLUMN checkin_end")
+        conn.execute("ALTER TABLE accounts DROP COLUMN not_before")
+        conn.execute("DROP TABLE schedule_notices")
+        conn.execute("INSERT INTO users (email, created_at) VALUES (?, ?)", ("preserved@example.com", "now"))
         assert db.missing_structure(db._reference_structure(), db._structure(conn))
 
         db._ensure_schema(conn)
 
         columns = {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
-        assert {"checkin_start", "checkin_end"} <= columns
+        assert {"checkin_start", "checkin_end", "not_before"} <= columns
+        assert conn.execute("SELECT email FROM users").fetchone()[0] == "preserved@example.com"
         assert db.missing_structure(db._reference_structure(), db._structure(conn)) == []
     finally:
         conn.close()

@@ -42,9 +42,11 @@ def transaction() -> Iterator[None]:
 
 
 _SCHEMA = (pathlib.Path(__file__).with_name("schema.sql")).read_text()
-_ADDITIVE_TABLES = frozenset({"verifications", "credential_notices"})
+_ADDITIVE_TABLES = frozenset({"verifications", "credential_notices", "schedule_notices"})
 # 仅自动补齐白名单字段。
-_ADDITIVE_COLUMNS = frozenset({("accounts", "checkin_start"), ("accounts", "checkin_end")})
+_ADDITIVE_COLUMNS = frozenset({
+    ("accounts", "checkin_start"), ("accounts", "checkin_end"), ("accounts", "not_before"),
+})
 
 
 def _structure(conn: sqlite3.Connection) -> dict[str, set[str]]:
@@ -120,7 +122,7 @@ _UPDATABLE = {
     "password_enc", "enabled", "jd", "wd", "dkdz",
     "casual", "token", "cookies", "token_at",
     "last_run_at", "last_status", "last_message", "auth_error", "updated_at",
-    "checkin_start", "checkin_end",
+    "checkin_start", "checkin_end", "not_before",
 }
 
 
@@ -393,17 +395,17 @@ def set_auth_error(account_id: int, kind: AuthError | str) -> bool:
 
 def insert_account(row: dict) -> dict | None:
     payload = {"token": "", "casual": None, "cookies": None, "token_at": None,
-               "checkin_start": None, "checkin_end": None,
+               "checkin_start": None, "checkin_end": None, "not_before": None,
                "auth_error": "", "dkdz": "", "jd": None, "wd": None}
     payload.update(row)
     payload = _seal(payload)
     _exec(
         """INSERT INTO accounts (user_id, csu_username, password_enc, enabled,
                                  jd, wd, dkdz, token, casual, cookies, token_at, auth_error,
-                                 created_at, updated_at, checkin_start, checkin_end)
+                                 created_at, updated_at, checkin_start, checkin_end, not_before)
            VALUES (:user_id, :csu_username, :password_enc, :enabled,
                    :jd, :wd, :dkdz, :token, :casual, :cookies, :token_at, :auth_error,
-                   :created_at, :updated_at, :checkin_start, :checkin_end)""",
+                   :created_at, :updated_at, :checkin_start, :checkin_end, :not_before)""",
         payload,
     )
     return get_account_by_username(row["user_id"], row["csu_username"])
@@ -483,3 +485,29 @@ def list_records_in_window(account_id: int, trigger: str, start: str, end: str, 
 def delete_user(email: str) -> None:
     """级联删掉用户及其账号/会话/记录（e2e 收尾用）。"""
     _exec("DELETE FROM users WHERE email = ?", (email,))
+
+
+def queue_schedule_notice(account_id: int, not_before: str, start: str, end: str) -> None:
+    _exec("""INSERT INTO schedule_notices (account_id, not_before, checkin_start, checkin_end, next_at)
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET
+             not_before=excluded.not_before, checkin_start=excluded.checkin_start,
+             checkin_end=excluded.checkin_end, attempts=0, next_at=excluded.next_at""",
+          (account_id, not_before, start, end, now_iso()))
+
+
+def due_schedule_notices(now: str, max_attempts: int, limit: int) -> list[dict]:
+    return _all("""SELECT * FROM schedule_notices WHERE next_at <= ? OR attempts >= ?
+                   ORDER BY next_at, account_id LIMIT ?""", (now, max_attempts, limit))
+
+
+def get_schedule_notice(account_id: int) -> dict | None:
+    return _one("SELECT * FROM schedule_notices WHERE account_id = ?", (account_id,))
+
+
+def attempt_schedule_notice(account_id: int, next_at: str) -> None:
+    _exec("UPDATE schedule_notices SET attempts = attempts + 1, next_at = ? WHERE account_id = ?",
+          (next_at, account_id))
+
+
+def delete_schedule_notice(account_id: int) -> None:
+    _exec("DELETE FROM schedule_notices WHERE account_id = ?", (account_id,))

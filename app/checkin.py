@@ -26,10 +26,10 @@ from .errors import (
 )
 from .locks import lock_for
 from .log import log_account_enabled_changed, log_event
-from .notifications import send_credential_notice
+from .notifications import reset_not_before, send_credential_notice
 from .ratelimit import FailureCooldown, SlidingWindow
 from .redaction import scrub_detail
-from .validate import account_checkin_window, parse_window
+from .validate import account_checkin_window, before_account_start, parse_window
 
 _login_paused_until = 0.0
 _cas_gate = threading.Semaphore(cfg.config.cas_concurrency)
@@ -684,6 +684,8 @@ def _run(account: AccountRow | dict, trigger: str) -> CheckinResult:
     """提交前遇到出口故障时重试，尝试次数不超过出口总数。"""
     if is_verifying(account["id"]):
         return _verifying_result()
+    if trigger == Trigger.SCHEDULE and before_account_start(account, local_now(cfg.config.tz).strftime("%H:%M")):
+        return {"status": CheckinStatus.WAITING, "message": "未到时间", "dksj": None, "deferred": True}
     for _ in range(exits.summary()["total"]):
         try:
             return _attempt(account, trigger)
@@ -711,8 +713,13 @@ def _save_checkin_window(account: dict, data: dict) -> None:
     if (account.get("checkin_start"), account.get("checkin_end")) == window:
         return
     start, end = window
-    account["checkin_start"], account["checkin_end"] = window
-    db.update_account(account["id"], {"checkin_start": start, "checkin_end": end})
+    fields = {"checkin_start": start, "checkin_end": end}
+    with db.transaction():
+        reset = reset_not_before(account, fields)
+        db.update_account(account["id"], fields)
+    if reset:
+        log_event("account.not_before_reset", account_id=account["id"], not_before=account["not_before"])
+    account.update(fields)
 
 
 def _attempt(account: AccountRow | dict, trigger: str) -> CheckinResult:

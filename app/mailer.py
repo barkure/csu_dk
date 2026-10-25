@@ -88,3 +88,13 @@ def send_credential_invalid_notice(email: str, username: str) -> dict:
         "credential_invalid", username_tail=username[-4:] if username else ""))
     log_event("mail.credential_invalid_sent", email=email, message_id=result["id"])
     return result
+
+
+def send_schedule_reset_notice(email: str, username: str, not_before: str, start: str, end: str) -> dict:
+    if not mailer_enabled():
+        return {"sent": False}
+    result = _send(email, "【妙妙道具】打卡时间已调整", _render(
+        "schedule_reset", username_tail=username[-4:] if username else "",
+        not_before=not_before, start=start, end=end))
+    log_event("mail.schedule_reset_sent", email=email, message_id=result["id"])
+    return result

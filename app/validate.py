@@ -45,3 +45,30 @@ def account_checkin_window(account: dict) -> tuple[str, str] | None:
     """返回完整且有效的账号时段。"""
     start, end = account.get("checkin_start"), account.get("checkin_end")
     return parse_window(f"{start}-{end}") if start and end else None
+
+
+def before_account_start(account: dict, time: str) -> bool:
+    value = account.get("not_before")
+    if not value:
+        return False
+    try:
+        return to_minutes(time) < to_minutes(value)
+    except InvalidTimeError:
+        return False
+
+
+def not_before_error(account: dict) -> str:
+    window = account_checkin_window(account)
+    value = account.get("not_before")
+    if not window or not value:
+        return ""
+    try:
+        start, end = map(to_minutes, window)
+        time = to_minutes(value)
+        if (start < end and time < start) or (start > end and end < time < start):
+            return f"不能早于学校打卡开始时间 {window[0]}"
+        if start < end and time > end:
+            return f"不能晚于学校打卡结束时间 {window[1]}"
+    except InvalidTimeError:
+        return "请重新设置打卡时间"
+    return ""

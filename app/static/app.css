@@ -298,6 +298,9 @@ header.page-title h1 {
     font-size: 13px;
   }
 
+  table.accounts tr.account td[data-label] { min-height: 34px; }
+  table.accounts input[type="time"] { padding-top: 1px; padding-bottom: 1px; }
+
   table.accounts tr.account td:last-child { justify-content: flex-end; }
 
   table.accounts .plain { padding: 6px 10px; }
@@ -485,3 +488,15 @@ b.err, td.err { color: var(--danger); }
 td.ok { color: var(--ok); }
 
 .hidden { display: none !important; }
+
+.accounts input[type="time"] {
+  width: 72px; padding: 5px 6px; font-size: 14px; text-align: center;
+  border: 1px solid var(--thin); border-radius: 4px;
+}
+.accounts input[type="time"]:hover { background: var(--wash); }
+.accounts input[type="time"]:focus-visible { border-color: var(--focus); }
+.accounts input[type="time"]::-webkit-calendar-picker-indicator { display: none; }
+.accounts input[type="time"]::-webkit-inner-spin-button { display: none; }
+.accounts input[type="time"]::-webkit-datetime-edit { display: flex; flex: 1; justify-content: center; padding: 0; }
+.accounts input[type="time"]::-webkit-datetime-edit-fields-wrapper { display: flex; justify-content: center; width: 100%; padding: 0; }
+.accounts input[type="time"]::-webkit-date-and-time-value { width: 100%; margin: 0; text-align: center; }

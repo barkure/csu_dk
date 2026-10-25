@@ -368,7 +368,7 @@ def test_address_has_its_own_column(client):
     account = db.list_accounts(user["id"])[0]
     html = client.get(f"/ui/accounts?open={account['id']}").text
     header = re.search(r"<thead>(.*?)</thead>", html, re.DOTALL).group(1)
-    assert header.count("<th>") == 6
+    assert header.count("<th>") == 7
     assert "<th>楼栋</th>" in header
     assert "下次执行" not in html, "排期是服务端自己的事，不给用户看"
     assert "坐标" not in html
@@ -377,13 +377,13 @@ def test_address_has_its_own_column(client):
     row = next(r for r in re.findall(r'<tr class="account[^"]*">(.*?)</tr>', html, re.DOTALL)
                if account["csu_username"] in r)
     cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.DOTALL)
-    assert cells[4].strip() == "升华8栋"
+    assert cells[5].strip() == "升华8栋"
     empty = make_account(user["id"], "977500002", dkdz="")
     empty_html = client.get(f"/ui/accounts?open={empty['id']}").text
     empty_row = next(row for row in re.findall(r'<tr class="account[^"]*">(.*?)</tr>', empty_html, re.DOTALL)
                      if empty["csu_username"] in row)
     empty_cells = re.findall(r"<td[^>]*>(.*?)</td>", empty_row, re.DOTALL)
-    assert empty_cells[4].strip() == "—"
+    assert empty_cells[5].strip() == "—"
 
 
 def test_expanded_row_gets_is_open_class(client):

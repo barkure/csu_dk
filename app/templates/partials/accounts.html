@@ -4,7 +4,7 @@
   <div class="table-wrap">
     <table class="accounts">
       <thead>
-        <tr><th>学号</th><th>账号状态</th><th>自动打卡</th><th>今日结果</th><th>楼栋</th><th></th></tr>
+        <tr><th>学号</th><th>账号状态</th><th>自动打卡</th><th>不早于</th><th>今日结果</th><th>楼栋</th><th></th></tr>
       </thead>
       <tbody>
       {% for item in rows %}
@@ -22,6 +22,13 @@
               </svg>
             </button>
           </td>
+          <td class="mono" data-label="不早于">{% if open_id == a.id %}
+            <span>{{ a.not_before or '--:--' }}</span>
+            <input type="time" name="notBefore" value="{{ a.not_before or '' }}" aria-label="不早于"
+                   id="not-before-{{ a.id }}" class="hidden"
+                   hx-post="/ui/accounts/{{ a.id }}/not-before?open={{ a.id }}" hx-trigger="change"
+                   hx-target="#accounts-card" hx-swap="outerHTML settle:0">
+          {% else %}{{ a.not_before or '--:--' }}{% endif %}</td>
           <td class="{{ item.today.cls }}" data-label="今日结果"{% if item.window %} title="打卡时段 {{ item.window }}"{% endif %}>{{ item.today.label }}</td>
           <td data-label="楼栋"{% if not a.dkdz %} class="muted" title="学校按你申报的地址返回的楼栋名，首次打卡时自动补上"{% endif %}>{{ a.dkdz or '—' }}</td>
           <td class="right">
@@ -33,8 +40,9 @@
         </tr>
         {% if open_id == a.id %}
         <tr class="actions-row" data-role="actions">
-          <td colspan="6">
+          <td colspan="7">
             <div class="actions">
+              <button type="button" class="plain" data-edit-time="not-before-{{ a.id }}" aria-controls="not-before-{{ a.id }}" aria-expanded="false">设置不早于</button>
               <button class="plain" hx-post="/ui/accounts/{{ a.id }}/run" hx-target="#accounts-card" hx-swap="outerHTML">立即打卡</button>
               <button class="plain" hx-get="/ui/form?edit={{ a.id }}" hx-target="#form-card"
                     hx-swap="outerHTML show:top showTarget:body">编辑账号</button>
@@ -49,7 +57,7 @@
         </tr>
         {% endif %}
       {% else %}
-        <tr><td colspan="6" class="muted">还没有打卡账号，在上面添加一个。</td></tr>
+        <tr><td colspan="7" class="muted">还没有打卡账号，在上面添加一个。</td></tr>
       {% endfor %}
       </tbody>
     </table>
