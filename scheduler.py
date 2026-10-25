@@ -1,0 +1,256 @@
+"""批量打卡、刷新登录态与维护任务。"""
+from __future__ import annotations
+
+import os
+import random
+import socket
+from datetime import datetime, timedelta
+
+from apscheduler.schedulers.background import BackgroundScheduler
+
+from . import config as cfg
+from . import db
+from .checkin import (
+    forget_verification,
+    has_fresh_login,
+    is_verifying,
+    login_paused_until,
+    pending_verifications,
+    refresh_login,
+    resolve_verification,
+    run_checkin,
+    sweep_login_state,
+)
+from .clock import local_now, parse_local, to_local_iso
+from .domain import DAY_SETTLED, Trigger
+from .errors import AppError
+from .log import log_event
+from .notifications import retry_credential_notices
+from .random_schedule import is_due
+from .redaction import scrub_detail
+from .validate import account_checkin_window, to_minutes
+
+MAX_ATTEMPTS_PER_DAY = 3
+RETRY_INTERVAL_MINUTES = 10
+# 每轮最多尝试刷新的账号数。
+REFRESH_ATTEMPTS_PER_TICK = 3
+
+_scheduler: BackgroundScheduler | None = None
+_lease_owner: str | None = None
+
+
+def lease_stale_seconds() -> int:
+    """租约至少覆盖三个扫描周期。"""
+    return max(120, cfg.config.scheduler_interval * 3)
+
+
+def _done_in_window(account: dict, start: datetime, end: datetime) -> bool:
+    if account.get("last_status") not in DAY_SETTLED:
+        return False
+    last_run = account.get("last_run_at")
+    return bool(last_run) and start <= parse_local(last_run) <= end
+
+
+def _daily_bounds(now: datetime) -> tuple[datetime, datetime]:
+    """当天开始时间至午夜前，用于执行记录统计。"""
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        minutes=to_minutes(cfg.config.checkin_start))
+    return start, now.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+
+def _window_bounds(now: datetime, start_text: str, end_text: str) -> tuple[datetime, datetime]:
+    """计算学校时段，支持跨午夜。"""
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        minutes=to_minutes(start_text))
+    end = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(
+        minutes=to_minutes(end_text))
+    if end <= start:
+        end += timedelta(days=1)
+        if now < start:
+            start -= timedelta(days=1)
+            end -= timedelta(days=1)
+    return start, end
+
+
+def _account_bounds(account: dict, now: datetime) -> tuple[datetime, datetime]:
+    """返回账号时段，未知时使用当天调度范围。"""
+    window = account_checkin_window(account)
+    return _window_bounds(now, *window) if window else _daily_bounds(now)
+
+
+def _checkin_started(now: datetime) -> bool:
+    return now.hour * 60 + now.minute >= to_minutes(cfg.config.checkin_start)
+
+
+def _ready(account: dict, now: datetime, force: bool = False) -> bool:
+    if is_verifying(account["id"]):
+        return False
+    if force:
+        return True
+    if not _checkin_started(now):
+        return False
+    start, end = _daily_bounds(now)
+    acct_start, acct_end = _account_bounds(account, now)
+    if not acct_start <= now <= acct_end:
+        return False
+    if _done_in_window(account, start, end):
+        return False
+    if not is_due(account, now):
+        return False
+    start, end = max(start, acct_start), min(end, acct_end)
+    attempts = db.list_records_in_window(account["id"], Trigger.SCHEDULE,
+                                         to_local_iso(start), to_local_iso(end),
+                                         MAX_ATTEMPTS_PER_DAY, exclude_waiting=True)
+    if len(attempts) >= MAX_ATTEMPTS_PER_DAY:
+        return False
+    recent = db.list_records_in_window(account["id"], Trigger.SCHEDULE,
+                                      to_local_iso(start), to_local_iso(end), 1)
+    if recent and now - parse_local(recent[0]["run_at"]) < timedelta(minutes=RETRY_INTERVAL_MINUTES):
+        return False
+    return not login_paused_until() or has_fresh_login(account)
+
+
+def run_batch(trigger: Trigger | str = Trigger.SCHEDULE, force: bool = False,
+              accounts: list[dict] | None = None) -> list[tuple[dict, dict]]:
+    now = local_now(cfg.config.tz)
+    results = []
+    source = db.all_enabled_accounts() if accounts is None else accounts
+    ready = [account for account in source if _ready(account, now, force)]
+    take = len(ready) if force else min(cfg.config.checkin_per_tick, len(ready))
+    picked = random.sample(ready, take) if take else []
+    for account in picked:
+        # 前一个账号请求耗时较长时，后续账号可能已错过自己的随机时段。
+        if not force and not is_due(account, local_now(cfg.config.tz)):
+            continue
+        try:
+            result = run_checkin(account, trigger)
+        except AppError as error:
+            if error.status != 404:
+                raise
+            continue
+        if result.get("deferred"):
+            continue
+        results.append((account, result))
+        if result.get("paused_until"):
+            continue
+        log_event("checkin.batch", account_id=account["id"], status=result["status"],
+                  message=scrub_detail(result["message"]))
+    return results
+
+
+def run_verifications() -> list[tuple[dict, dict]]:
+    results = []
+    for task in pending_verifications(cfg.config.checkin_per_tick):
+        account = db.get_account_by_id(task["account_id"])
+        if not account:
+            forget_verification(task["account_id"])
+            continue
+        try:
+            result = resolve_verification(account)
+        except AppError as error:
+            if error.status != 404:
+                raise
+            continue
+        if result:
+            results.append((account, result))
+    return results
+
+
+def _refresh_eligible(account: dict) -> bool:
+    return bool(account.get("enabled") and not account.get("auth_error")
+                and not login_paused_until())
+
+
+def refresh_logins(accounts: list[dict] | None = None,
+                   limit: int = REFRESH_ATTEMPTS_PER_TICK) -> list[tuple[dict, dict]]:
+    """随机刷新登录态；遇到需延后执行的结果就结束本轮。"""
+    source = db.all_enabled_accounts() if accounts is None else accounts
+    ready = [account for account in source
+             if _refresh_eligible(account) and not has_fresh_login(account)]
+    if not ready:
+        return []
+    results = []
+    for account in random.sample(ready, min(limit, len(ready))):
+        try:
+            result = refresh_login(account)
+        except AppError as error:
+            if error.status != 404:
+                raise
+            continue
+        if result.get("deferred"):
+            break
+        log_event("login.refresh", account_id=account["id"], ok=result.get("ok"),
+                  message=scrub_detail(result.get("message") or ""))
+        results.append((account, result))
+    return results
+
+
+def maintenance() -> None:
+    now = local_now(cfg.config.tz)
+    if _lease_owner and not _holds_lease(now):
+        return
+
+    try:
+        codes = db.purge_codes_older_than(to_local_iso(now - timedelta(days=1)))
+        sessions = db.purge_expired_sessions(to_local_iso(now))
+        records = db.purge_old_records(to_local_iso(now - timedelta(days=cfg.config.record_retention_days)))
+        verifications = db.purge_verifications(to_local_iso(now - timedelta(days=1)))
+        sweep_login_state()
+        if codes or sessions or records or verifications:
+            log_event("maintenance.purged", codes=codes, sessions=sessions, records=records,
+                      verifications=verifications)
+    except Exception as error:  # noqa: BLE001 - 清理失败只记日志，不能拖垮调度线程
+        print(f"[maintenance] 清理失败：{error}", flush=True)
+
+
+def _holds_lease(now: datetime, announce: bool = True) -> bool:
+    """续租，或接管已过期的租约。"""
+    now_iso = to_local_iso(now)
+    if db.heartbeat_scheduler_lease(_lease_owner, now_iso):
+        return True
+    stale_before = to_local_iso(now - timedelta(seconds=lease_stale_seconds()))
+    if db.acquire_scheduler_lease(_lease_owner, now_iso, stale_before):
+        if announce:
+            print("[scheduler] 已接管调度租约", flush=True)
+        return True
+    return False
+
+
+def tick() -> None:
+    """先复核结果，再按时间窗口打卡或刷新登录态。"""
+    now = local_now(cfg.config.tz)
+    if _lease_owner and not _holds_lease(now):
+        return
+    run_verifications()
+    if _checkin_started(now):
+        run_batch()
+    else:
+        refresh_logins()
+    retry_credential_notices()
+
+
+def start_scheduler() -> BackgroundScheduler | None:
+    global _scheduler, _lease_owner
+    _lease_owner = f"{socket.gethostname()}:{os.getpid()}"
+    if _holds_lease(local_now(cfg.config.tz), announce=False):
+        print(f"[scheduler] 已获得调度租约（{_lease_owner}）", flush=True)
+    else:
+        print("[scheduler] 已有进程持有调度租约，本进程暂不执行打卡（租约失效后会自动接管）", flush=True)
+
+    _scheduler = BackgroundScheduler(daemon=True)
+    _scheduler.add_job(tick, "interval", seconds=cfg.config.scheduler_interval,
+                       id="tick", max_instances=1, coalesce=True)
+    _scheduler.add_job(maintenance, "interval", seconds=cfg.config.maintenance_interval,
+                       id="maintenance", max_instances=1, coalesce=True)
+    _scheduler.start()
+    return _scheduler
+
+
+def stop_scheduler() -> None:
+    global _scheduler, _lease_owner
+    if _lease_owner:
+        db.release_scheduler_lease(_lease_owner)
+        _lease_owner = None
+    if _scheduler:
+        _scheduler.shutdown(wait=False)
+        _scheduler = None

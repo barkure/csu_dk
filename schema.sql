@@ -1,0 +1,94 @@
+CREATE TABLE IF NOT EXISTS accounts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  csu_username  TEXT NOT NULL,
+  password_enc  TEXT NOT NULL,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  jd            REAL,
+  wd            REAL,
+  dkdz          TEXT NOT NULL DEFAULT '',
+  casual        TEXT,
+  token         TEXT,
+  cookies       TEXT,
+  token_at      TEXT,
+  last_run_at   TEXT,
+  last_status   TEXT,
+  last_message  TEXT,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  auth_error    TEXT NOT NULL DEFAULT '',
+  checkin_start      TEXT,
+  checkin_end        TEXT,
+  random_start       TEXT,
+  random_end         TEXT,
+  UNIQUE(user_id, csu_username)
+);
+CREATE TABLE IF NOT EXISTS login_codes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  email       TEXT NOT NULL,
+  code_hash   TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  used        INTEGER NOT NULL DEFAULT 0,
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS records (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  run_at     TEXT NOT NULL,
+  trigger    TEXT NOT NULL,
+  status     TEXT NOT NULL,
+  message    TEXT,
+  dksj       TEXT
+);
+CREATE TABLE IF NOT EXISTS verifications (
+  account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  run_at     TEXT NOT NULL,
+  trigger    TEXT NOT NULL,
+  next_at    TEXT NOT NULL,
+  rounds     INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scheduler_lease (
+  id           INTEGER PRIMARY KEY CHECK (id = 1),
+  owner        TEXT NOT NULL,
+  heartbeat_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS credential_notices (
+  account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  next_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash  TEXT PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  TEXT NOT NULL,
+  expires_at  TEXT NOT NULL,
+  user_agent  TEXT
+);
+CREATE TABLE IF NOT EXISTS users (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  email         TEXT NOT NULL UNIQUE,
+  created_at    TEXT NOT NULL,
+  last_login_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_accounts_auth_error ON accounts(auth_error);
+CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(csu_username);
+CREATE INDEX IF NOT EXISTS idx_codes_email ON login_codes(email, id DESC);
+CREATE INDEX IF NOT EXISTS idx_records_account ON records(account_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_records_account_run ON records(account_id, run_at);
+CREATE INDEX IF NOT EXISTS idx_verifications_next ON verifications(next_at);
+CREATE TRIGGER IF NOT EXISTS trg_accounts_unique_username
+BEFORE INSERT ON accounts
+WHEN EXISTS (SELECT 1 FROM accounts WHERE csu_username = NEW.csu_username)
+BEGIN
+  SELECT RAISE(ABORT, 'accounts.csu_username already bound');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_accounts_unique_username_update
+BEFORE UPDATE OF csu_username ON accounts
+WHEN NEW.csu_username != OLD.csu_username
+ AND EXISTS (SELECT 1 FROM accounts WHERE csu_username = NEW.csu_username)
+BEGIN
+  SELECT RAISE(ABORT, 'accounts.csu_username already bound');
+END;

@@ -1,0 +1,45 @@
+<section class="card" id="form-card">
+  <h2><span>{{ "编辑打卡账号" if editing else "添加打卡账号" }}</span>
+    {% if editing %}
+    <button class="plain" hx-get="/ui/form" hx-target="#form-card" hx-swap="outerHTML">取消编辑</button>
+    {% endif %}
+  </h2>
+  <form hx-post="/ui/accounts" hx-target="#form-card" hx-swap="outerHTML">
+    <div class="fieldblock">
+      <div class="fieldrow">
+        <label>学号
+          <input name="csuUsername" required pattern="[A-Za-z0-9]+" autocomplete="off"
+                 value="{{ editing.csu_username if editing else '' }}" {% if editing %}readonly{% endif %}>
+        </label>
+        <label>密码
+          <span class="secret">
+            <input name="password" type="password" autocomplete="new-password" {% if not editing %}required{% endif %}>
+            <button type="button" class="reveal" data-reveal aria-pressed="false"
+                    aria-label="显示密码" title="显示密码">
+              <svg class="eye-on" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" fill="none"
+                   stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1.5 9S4.2 3.8 9 3.8 16.5 9 16.5 9 13.8 14.2 9 14.2 1.5 9 1.5 9Z"/>
+                <circle cx="9" cy="9" r="2.6"/>
+              </svg>
+              <svg class="eye-off" width="18" height="18" viewBox="0 0 18 18" aria-hidden="true" fill="none"
+                   stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1.5 9S4.2 3.8 9 3.8 16.5 9 16.5 9 13.8 14.2 9 14.2 1.5 9 1.5 9Z"/>
+                <path d="M2.6 2.6l12.8 12.8"/>
+              </svg>
+            </button>
+          </span>
+        </label>
+        <button type="submit">{{ "保存" if editing else "添加" }}</button>
+      </div>
+      <p class="msg {{ msg_kind }}">{{ msg or '' }}</p>
+      <div class="random-schedule">
+        <input type="hidden" name="randomRange" value="true">
+        <label>随机打卡开始 <input type="time" name="randomStart"
+          value="{{ (editing.random_start or '') if editing else '' }}"></label>
+        <label>随机打卡结束 <input type="time" name="randomEnd"
+          value="{{ (editing.random_end or '') if editing else '' }}"></label>
+      </div>
+      <p class="schedule-note">可选：每天在此范围随机打卡一次（{{ timezone }}），请填写学校允许的时段。两项留空则使用默认调度。</p>
+    </div>
+  </form>
+</section>
