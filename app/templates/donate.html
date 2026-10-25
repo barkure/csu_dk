@@ -21,7 +21,7 @@
       {% for donor in donors %}
         <tr>
           <td>{{ '*' ~ donor.order if donor.order else '' }}</td>
-          <td>{{ donor.remark }}</td>
+          <td>{{ donor.remark or '-' }}</td>
           <td>{{ donor.amount }}</td>
         </tr>
       {% endfor %}

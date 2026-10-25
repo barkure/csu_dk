@@ -47,14 +47,15 @@ body.center {
 }
 
 .site-footer {
-  max-width: 1040px; margin: 36px auto 0;
-  color: var(--muted); text-align: center; font-size: 13px;
+  --contact-size: 14px;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  width: 100%; max-width: 1040px; margin: 36px auto 0;
+  color: rgb(0 0 0 / 70%); text-align: left; font-size: 14px;
 }
 .site-footer a {
-  color: color-mix(in srgb, var(--muted) 50%, var(--ink));
+  color: inherit;
   text-decoration: none;
 }
-.site-footer a:hover { color: var(--ink); }
 body.center .site-footer { margin-top: 24px; }
 
 
@@ -103,6 +104,33 @@ header {
   max-width: min(420px, 90vw);
 }
 .modal-card img { display: block; margin: 0 auto; }
+.contact-links { display: flex; gap: 24px; order: 1; }
+.contact-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: var(--contact-size); height: var(--contact-size); padding: 0; margin: 0;
+  background: none; border: 0;
+  text-decoration: none; letter-spacing: 0;
+}
+.contact-icon:is(:hover, :active, :focus-visible) .contact-symbol { color: var(--contact-color); opacity: 1; }
+.contact-symbol {
+  opacity: .7;
+  width: var(--contact-size); height: var(--contact-size); background: currentColor;
+  mask: var(--contact-icon) center / contain no-repeat;
+}
+.contact-mail { --contact-icon: url("/static/icons/gmail.svg"); --contact-color: #ea4335; }
+.contact-xiaohongshu {
+  --contact-icon: url("/static/icons/xiaohongshu.svg");
+  --contact-color: #ff2442;
+  width: calc(var(--contact-size) * 2.8); height: var(--contact-size);
+  mask-size: calc(var(--contact-size) * 2.8) calc(var(--contact-size) * 2.8);
+}
+.contact-icon:has(.contact-xiaohongshu) { width: calc(var(--contact-size) * 2.8); }
+.contact-telegram { --contact-icon: url("/static/icons/telegram.svg"); --contact-color: #26a5e4; }
+.contact-github { --contact-icon: url("/static/icons/github.svg"); --contact-color: #181717; }
+@media (prefers-color-scheme: dark) {
+  .site-footer { color: rgb(255 255 255 / 80%); }
+  .contact-github { --contact-color: #fff; }
+}
 .donate-note {
   margin: 24px 0 0;
   color: var(--muted); font-size: 13px; text-align: left;
@@ -240,6 +268,8 @@ header.page-title h1 {
 
 
 @media (max-width: 720px) {
+  .site-footer { flex-direction: column; gap: 12px; text-align: center; }
+  .footer-credit { white-space: nowrap; }
   .donors { padding: 0 12px; }
   .donors table { width: 100%; }
   .donors th, .donors td { padding-left: 8px; padding-right: 8px; }
