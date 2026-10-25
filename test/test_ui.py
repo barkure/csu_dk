@@ -289,8 +289,8 @@ def test_no_task_is_shown_without_error_style(client):
 
     html = client.get(f"/ui/accounts?open={account['id']}").text
     records = client.get(f"/ui/accounts/{account['id']}/records").text
-    assert "不用打卡" in html
-    assert "不用打卡" in records
+    assert "无需打卡" in html
+    assert "无需打卡" in records
     assert "无打卡事项" in records
     assert 'aria-checked="false"' in html
 

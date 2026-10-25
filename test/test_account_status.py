@@ -118,7 +118,7 @@ def test_yesterday_no_task_does_not_count_as_today(monkeypatch):
 def test_today_no_task_is_still_visible(monkeypatch):
     monkeypatch.setattr("app.views._now", lambda: ("2026-09-15T20:30:00", "20:30"))
     account = {"enabled": 1, "last_status": "no_task", "last_run_at": "2026-09-15T20:10:00"}
-    assert today_result(account) == {"label": "不用打卡", "cls": ""}
+    assert today_result(account) == {"label": "无需打卡", "cls": ""}
 
 
 def test_disabled_account_is_not_waiting(monkeypatch):

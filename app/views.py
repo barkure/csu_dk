@@ -8,7 +8,7 @@ from .validate import account_checkin_window, before_account_start, to_minutes
 
 STATUS_TEXT = {
     CheckinStatus.SUCCESS: "打卡成功", CheckinStatus.SKIPPED: "已打过卡",
-    CheckinStatus.NO_TASK: "不用打卡", CheckinStatus.WAITING: "未到时间",
+    CheckinStatus.NO_TASK: "无需打卡", CheckinStatus.WAITING: "未到时间",
     CheckinStatus.FAILED: "打卡失败",
 }
 BADGE_CLASS = {
@@ -54,7 +54,7 @@ def today_result(account: dict, *, verifying: bool = False) -> dict:
     if fresh and account["last_status"] in (CheckinStatus.SUCCESS, CheckinStatus.SKIPPED):
         return {"label": "打卡成功", "cls": "ok"}
     if fresh and account["last_status"] == CheckinStatus.NO_TASK:
-        return {"label": "不用打卡", "cls": ""}
+        return {"label": "无需打卡", "cls": ""}
     if fresh and account["last_status"] == CheckinStatus.FAILED:
         return {"label": "打卡失败", "cls": "err"}
     if not fresh and not account.get("enabled"):

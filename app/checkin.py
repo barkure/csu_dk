@@ -540,6 +540,8 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
         return CheckinStatus.SKIPPED, f"今日已打卡（{dksj or '—'}）", dksj
     if not data.get("kdk"):
         reason = data.get("bkyy") or "未知原因"
+        if str(reason).strip().rstrip("。！!") in {"您无需打卡", "无需打卡"}:
+            return CheckinStatus.NO_TASK, "无需打卡", None
         status = CheckinStatus.WAITING if _outside_checkin_window(data) else CheckinStatus.FAILED
         return status, f"当前不可打卡：{reason}", None
 
@@ -735,7 +737,7 @@ def _attempt(account: AccountRow | dict, trigger: str) -> CheckinResult:
         data = response.get("data") or {}
         if code == NO_TASK_CODE:
             status = CheckinStatus.NO_TASK
-            message = "无打卡事项"
+            message = "无需打卡"
         elif code != OK_CODE:
             raise RuntimeError(f"业务接口返回异常：{str(response)[:160]}")
         else:

@@ -1200,10 +1200,15 @@ def test_login_survives_undecryptable_password_when_session_is_alive(monkeypatch
     assert seen["password"] is None, "应当把 None 交给 CAS，让它在真需要密码时才报错"
 
 
-def test_engine_records_no_task_without_disabling_account(user, monkeypatch):
+@pytest.mark.parametrize('response', [
+    {"code": "331", "message": "当前没有打卡事项", "data": None},
+    {"code": "200", "data": {"kdk": False, "bkyy": "您无需打卡"}},
+    {"code": "200", "data": {"kdk": False, "bkyy": "无需打卡。"}},
+])
+def test_engine_records_no_task_without_disabling_account(user, monkeypatch, response):
     client = EngineClient({})
     account = engine_account(user, monkeypatch, client)
-    client.dk_status = lambda dklb="PA": {"code": "331", "message": "当前没有打卡事项", "data": None}
+    client.dk_status = lambda dklb="PA": response
     logins = []
     events = []
     monkeypatch.setattr("app.checkin.cas_login", lambda *_a, **_k: logins.append("login"))
@@ -1212,7 +1217,7 @@ def test_engine_records_no_task_without_disabling_account(user, monkeypatch):
 
     result = engine_status(account)
 
-    assert result == {"status": "no_task", "message": "无打卡事项", "dksj": None}
+    assert result == {"status": "no_task", "message": "无需打卡", "dksj": None}
     assert logins == []
     assert [record["status"] for record in db.list_records(account["id"])] == ["no_task"]
     saved = db.get_account_by_id(account["id"])
