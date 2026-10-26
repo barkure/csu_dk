@@ -31,6 +31,8 @@ def test_init_adds_new_columns_without_rebuilding(tmp_path):
         conn.execute("ALTER TABLE accounts DROP COLUMN checkin_start")
         conn.execute("ALTER TABLE accounts DROP COLUMN checkin_end")
         conn.execute("ALTER TABLE accounts DROP COLUMN not_before")
+        conn.execute("ALTER TABLE accounts DROP COLUMN lx")
+        conn.execute("ALTER TABLE verifications DROP COLUMN dklb")
         conn.execute("DROP TABLE schedule_notices")
         conn.execute("INSERT INTO users (email, created_at) VALUES (?, ?)", ("preserved@example.com", "now"))
         assert db.missing_structure(db._reference_structure(), db._structure(conn))
@@ -39,8 +41,44 @@ def test_init_adds_new_columns_without_rebuilding(tmp_path):
 
         columns = {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
         assert {"checkin_start", "checkin_end", "not_before"} <= columns
+        lx = next(row for row in conn.execute("PRAGMA table_info(accounts)") if row[1] == "lx")
+        assert lx[2:5] == ("TEXT", 1, "''")
+        dklb = next(row for row in conn.execute("PRAGMA table_info(verifications)") if row[1] == "dklb")
+        assert dklb[2:5] == ("TEXT", 1, "'PA'")
         assert conn.execute("SELECT email FROM users").fetchone()[0] == "preserved@example.com"
         assert db.missing_structure(db._reference_structure(), db._structure(conn)) == []
+    finally:
+        conn.close()
+
+
+def test_nullable_lx_migration_preserves_accounts_and_records():
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    try:
+        conn.executescript(db._SCHEMA.replace("lx            TEXT NOT NULL DEFAULT ''", "lx            TEXT"))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("INSERT INTO users (id,email,created_at) VALUES (1,'test@example.com','now')")
+        for account_id, lx in ((1, None), (2, "2"), (3, "3")):
+            conn.execute(
+                "INSERT INTO accounts (id,user_id,csu_username,password_enc,created_at,updated_at,lx) "
+                "VALUES (?,1,?,'encrypted','now','now',?)", (account_id, str(account_id), lx),
+            )
+        conn.execute("INSERT INTO records (account_id,run_at,trigger,status) VALUES (2,'now','manual','success')")
+        records = conn.execute("SELECT * FROM records").fetchall()
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(accounts)") if row[1] != "lx"]
+        query = f"SELECT {','.join(columns)} FROM accounts ORDER BY id"
+        accounts = conn.execute(query).fetchall()
+
+        db._ensure_schema(conn)
+        db._ensure_schema(conn)
+
+        assert conn.execute(query).fetchall() == accounts
+        assert conn.execute("SELECT * FROM records").fetchall() == records
+        assert conn.execute("SELECT lx FROM accounts ORDER BY id").fetchall() == [("",), ("2",), ("3",)]
+        column = next(row for row in conn.execute("PRAGMA table_info(accounts)") if row[1] == "lx")
+        assert column[2:5] == ("TEXT", 1, "''")
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("UPDATE accounts SET lx = NULL WHERE id = 1")
     finally:
         conn.close()
 

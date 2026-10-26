@@ -335,13 +335,14 @@ def test_refresh_login_defers_rate_limit(user, monkeypatch):
 
 class EngineClient:
 
-    def __init__(self, status, location=None, submit=None, after=None):
+    def __init__(self, status, location=None, submit=None, after=None, month=None):
         self.casual = "casual1234567890"
         self.token = "tok"
         self._status = status
         self._location = location
         self._submit = submit
         self._after = after
+        self._month = month
         self.submitted = None
 
     def dk_status(self, dklb="PA"):
@@ -353,6 +354,9 @@ class EngineClient:
     def submit_dk(self, **kwargs):
         self.submitted = kwargs
         return self._submit or {"code": "200"}
+
+    def month_stats(self, rq, dklb="PA"):
+        return self._month or {"code": "200", "data": {"bykq": []}}
 
     def cookies_json(self):
         return "[]"
@@ -480,7 +484,7 @@ def test_engine_failed_when_location_rejected(user, monkeypatch):
         location={"canDk": False, "msg": "不在考勤范围", "yxMc": "升华5栋", "pcMi": 700},
     )
     account = engine_account(user, monkeypatch, client, dkdz="升华5栋")
-    monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="": (
+    monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="", dklb="PA": (
         (112.936833, 28.157238), "升华5栋", {"canDk": False, "pcMi": 700, "yxMc": "升华5栋"},
         "located",
     ))
@@ -496,7 +500,7 @@ def test_engine_determines_location_when_unknown(user, monkeypatch):
         after={"sfydk": 1, "dksj": "2026-09-12 20:18:43"},
     )
     account = engine_account(user, monkeypatch, client)
-    monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="": (
+    monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="", dklb="PA": (
         (112.936237, 28.158935), "升华24栋", {"canDk": True, "pcMi": 2, "yxMc": "升华24栋"},
         "located",
     ))
@@ -515,7 +519,7 @@ def test_engine_relocates_when_position_rejected(user, monkeypatch):
         after={"sfydk": 1, "dksj": "2026-09-12 20:18:43"},
     )
     account = engine_account(user, monkeypatch, client, dkdz="升华5栋")
-    monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="": (
+    monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="", dklb="PA": (
         (112.935978, 28.158930), "升华24栋", {"canDk": True, "pcMi": 3, "yxMc": "升华24栋"},
         "located",
     ))
@@ -535,7 +539,7 @@ def test_engine_stores_private_coords_for_rental(user, monkeypatch):
         after={"sfydk": 1, "dksj": "2026-09-12 20:18:43"},
     )
     account = engine_account(user, monkeypatch, client)
-    monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="": (
+    monkeypatch.setattr("app.checkin.buildings.for_student", lambda _client, name="", dklb="PA": (
         (112.927056, 28.175114), "你申报的租房地址",
         {"canDk": True, "pcMi": 2, "yxMc": "你申报的租房地址"}, "located",
     ))
@@ -545,6 +549,80 @@ def test_engine_stores_private_coords_for_rental(user, monkeypatch):
     assert saved["dkdz"] == "你申报的租房地址"
     assert (saved["jd"], saved["wd"]) == (112.927056, 28.175114)
     assert buildings.resolve("你申报的租房地址") is None
+
+
+def test_other_type_submits_without_location_check(user, monkeypatch):
+    today = to_local_iso(local_now(cfg.config.tz))[:10]
+    client = EngineClient(
+        {"sfydk": 0, "kdk": True, "dkbc": "其他类型打卡", "lx": 3},
+        after={"sfydk": 1, "dksj": "2026-10-26 12:30:00"},
+        month={"code": "200", "data": {"bykq": [
+            {"rq": "2026-10-01", "dz": "旧地点"},
+            {"rq": today, "dz": "后湖小区-南区"},
+        ]}},
+    )
+    account = engine_account(user, monkeypatch, client)
+    client.check_location = lambda *_args, **_kwargs: pytest.fail("其他类型打卡不应做位置校验")
+    monkeypatch.setattr("app.checkin.buildings.for_student",
+                        lambda *_args, **_kwargs: pytest.fail("其他类型打卡不应定位"))
+    monkeypatch.setattr("app.checkin.buildings.verdict",
+                        lambda *_args, **_kwargs: pytest.fail("其他类型打卡不应探点"))
+
+    result = engine_status(account)
+
+    assert result["status"] == "success"
+    assert client.submitted["dkbc"] == "其他类型打卡"
+    assert client.submitted["dkdz"] == "后湖小区-南区"
+    assert "sfwcdk" not in client.submitted
+    saved = db.get_account_by_id(account["id"])
+    assert saved["lx"] == "3"
+    assert saved["jd"] is not None and saved["wd"] is not None
+    assert saved["dkdz"] == ""
+
+
+def test_other_type_uses_configured_place_without_history(user, monkeypatch):
+    monkeypatch.setattr(cfg.config, "other_dkdz", "中南大学")
+    client = EngineClient(
+        {"sfydk": 0, "kdk": True, "dkbc": "其他类型打卡", "lx": 3},
+        after={"sfydk": 1, "dksj": "2026-10-26 12:30:00"},
+    )
+    account = engine_account(user, monkeypatch, client)
+
+    result = engine_status(account)
+
+    assert result["status"] == "success"
+    assert client.submitted["dkdz"] == "中南大学"
+
+
+def test_leave_type_uses_lx_for_status_and_location(user, monkeypatch):
+    client = EngineClient(
+        {"sfydk": 0, "kdk": True, "dkbc": "留校打卡", "lx": 2},
+        location={"canDk": True, "yxMc": "留校范围"},
+        after={"sfydk": 1, "dksj": "2026-10-26 20:10:00"},
+    )
+    account = engine_account(user, monkeypatch, client, lx="2", jd=112.9368, wd=28.1572)
+    seen = []
+    status, locate = client.dk_status, client.check_location
+    client.dk_status = lambda dklb="PA": (seen.append(dklb), status(dklb))[1]
+    client.check_location = lambda jd, wd, dklb="PA": (seen.append(dklb), locate(jd, wd, dklb))[1]
+
+    result = engine_status(account)
+
+    assert result["status"] == "success"
+    assert seen and set(seen) == {"LX"}
+
+
+def test_leave_type_out_of_range_points_to_manual_out(user, monkeypatch):
+    client = EngineClient(
+        {"sfydk": 0, "kdk": True, "dkbc": "留校打卡", "lx": 2},
+        location={"canDk": False, "msg": "不可打卡"},
+    )
+    account = engine_account(user, monkeypatch, client, lx="2", jd=112.9368, wd=28.1572)
+
+    result = engine_status(account)
+
+    assert result["status"] == "failed"
+    assert "外出打卡" in result["message"]
 
 
 def test_engine_reuses_account_coords_for_rental(user, monkeypatch):
@@ -777,6 +855,7 @@ def test_engine_defers_when_verify_never_confirms(user, monkeypatch):
     assert db.list_records(account["id"]) == []
     assert db.get_account_by_id(account["id"])["last_status"] is None
     assert checkin.is_verifying(account["id"]) is True
+    assert db.get_verification(account["id"])["dklb"] == "PA"
 
 
 def test_engine_defers_when_verify_read_errors(user, monkeypatch):
@@ -1059,6 +1138,14 @@ def test_batch_skips_account_awaiting_verification(user, monkeypatch):
     checkin._defer_verification(account, "2026-09-12T20:59:00", "schedule")
 
     assert scheduler.run_batch(accounts=[db.get_account_by_id(account["id"])]) == []
+
+
+def test_defer_verification_records_submission_shift(user):
+    account = make_account(user["id"])
+    now = to_local_iso(local_now(cfg.config.tz))
+    checkin._defer_verification(account, now, "schedule", "LX")
+
+    assert db.get_verification(account["id"])["dklb"] == "LX"
 
 
 def test_tick_dispatches_due_verifications(user, monkeypatch):
@@ -1413,3 +1500,156 @@ def test_engine_still_fails_on_unknown_business_code(user, monkeypatch):
 
     assert result["status"] == "failed"
     assert "业务接口返回异常" in result["message"]
+
+
+@pytest.mark.parametrize("initial", ["", "2"])
+def test_type_discovery_updates_current_requests(user, monkeypatch, initial):
+    client = EngineClient({})
+    account = engine_account(user, monkeypatch, client, lx=initial)
+    calls = []
+    expected = "LX" if not initial else "PA"
+    lx = "2" if not initial else "1"
+
+    def status(dklb="PA"):
+        calls.append(dklb)
+        if dklb != expected:
+            return {"code": "500", "data": None}
+        return {"code": "200", "data": {"lx": lx, "kdk": True}}
+
+    client.dk_status = status
+    _, response, code, dklb = checkin._business_status(account)
+    assert calls == (["PA", "LX"] if not initial else ["LX", "PA"])
+    assert code == "200" and dklb == expected
+    assert db.get_account_by_id(account["id"])["lx"] == lx
+    assert response["data"]["lx"] == lx
+
+
+def test_type_change_requeries_before_using_status():
+    calls = []
+
+    def status(dklb="PA"):
+        calls.append(dklb)
+        return {"code": "200", "data": {"lx": "2", "dkbc": dklb}}
+
+    response, dklb = checkin._query_status(SimpleNamespace(dk_status=status))
+    assert calls == ["PA", "LX"]
+    assert dklb == response["data"]["dkbc"] == "LX"
+
+
+def test_type_change_keeps_new_shift_when_requery_fails(user, monkeypatch):
+    client = EngineClient({})
+    account = engine_account(user, monkeypatch, client, lx="1")
+    calls = []
+
+    def status(dklb="PA"):
+        calls.append(dklb)
+        if dklb == "PA":
+            return {"code": "200", "data": {"lx": 2, "kdk": True}}
+        return {"code": "500", "message": "服务异常"}
+
+    client.dk_status = status
+    monkeypatch.setattr("app.checkin._login", lambda *_a, **_k: pytest.fail("普通失败不应重登"))
+
+    _, response, code, dklb = checkin._business_status(account)
+
+    assert calls == ["PA", "LX"]
+    assert code == "500" and dklb == "LX"
+    assert response["message"] == "服务异常"
+    assert db.get_account_by_id(account["id"])["lx"] == "2"
+
+
+def test_plain_500_does_not_relogin(user, monkeypatch):
+    client = EngineClient({})
+    account = engine_account(user, monkeypatch, client)
+    calls = []
+
+    def status(dklb="PA"):
+        calls.append(dklb)
+        return {"code": "500", "message": "服务异常"}
+
+    client.dk_status = status
+    monkeypatch.setattr("app.checkin._login", lambda *_a, **_k: pytest.fail("普通 500 不应重登"))
+
+    _, _response, code, dklb = checkin._business_status(account)
+
+    assert code == "500" and dklb == "PA"
+    assert calls == ["PA", "LX"]  # 类型未知会探测另一班次，但不会重登
+
+
+def test_alternate_shift_auth_failure_triggers_relogin(user, monkeypatch):
+    client = EngineClient({})
+    account = engine_account(user, monkeypatch, client)
+    calls = []
+
+    def status(dklb="PA"):
+        calls.append(dklb)
+        if len(calls) == 1:
+            return {"code": "500", "message": "服务异常"}
+        if len(calls) == 2:
+            return {"code": "401", "message": "未登录"}
+        return {"code": "200", "data": {"sfydk": 0, "kdk": True, "dkbc": "校内住宿打卡"}}
+
+    client.dk_status = status
+    logins = []
+
+    def fake_login(_account, **_kwargs):
+        logins.append(1)
+        return client
+
+    monkeypatch.setattr("app.checkin._login", fake_login)
+
+    _, _response, code, dklb = checkin._business_status(account)
+
+    assert calls == ["PA", "LX", "LX"]
+    assert logins == [1]
+    assert code == "200" and dklb == "LX"
+
+
+def test_verification_uses_submission_shift(user, monkeypatch):
+    client = EngineClient({"sfydk": 1, "dksj": "2026-10-26 20:10:00"})
+    account = engine_account(user, monkeypatch, client, lx="1")  # 当前类型按 PA
+    now = local_now(cfg.config.tz)
+    db.upsert_verification(account["id"], to_local_iso(now), "manual",
+                           to_local_iso(now - timedelta(minutes=1)), to_local_iso(now), dklb="LX")
+    calls = []
+
+    def status(dklb="PA"):
+        calls.append(dklb)
+        if dklb == "PA":
+            return {"code": "200", "data": {"sfydk": 1, "dksj": "2026-10-26 20:10:00"}}
+        return {"code": "500", "message": "服务异常"}
+
+    client.dk_status = status
+    result = checkin.resolve_verification(db.get_account_by_id(account["id"]))
+
+    assert result is None
+    assert calls == ["LX"]
+    assert db.list_records(account["id"]) == []
+
+
+def test_verification_success_on_submission_shift(user, monkeypatch):
+    client = EngineClient({})
+    account = engine_account(user, monkeypatch, client, lx="0")
+    now = local_now(cfg.config.tz)
+    db.upsert_verification(account["id"], to_local_iso(now), "manual",
+                           to_local_iso(now - timedelta(minutes=1)), to_local_iso(now), dklb="LX")
+    calls = []
+
+    def status(dklb="PA"):
+        calls.append(dklb)
+        return {"code": "200", "data": {"sfydk": 1, "dksj": "2026-10-26 20:10:00"}}
+
+    client.dk_status = status
+    result = checkin.resolve_verification(db.get_account_by_id(account["id"]))
+
+    assert result["status"] == "success"
+    assert calls == ["LX"]
+
+
+def test_recent_place_ignores_order_and_invalid_dates(monkeypatch):
+    monkeypatch.setattr(checkin, "local_now", lambda _: datetime.fromisoformat("2026-10-26T12:00:00"))
+    rows = [{"rq": "2026-10-25", "dz": "最近地点"}, {"rq": "2026-10-01", "dz": "旧地点"},
+            {"dz": "缺日期"}, {"rq": "2026-10-27", "dz": "未来地点"}, None]
+    for ordered in (rows, list(reversed(rows))):
+        client = SimpleNamespace(month_stats=lambda _, data=ordered: {"code": "200", "data": {"bykq": data}})
+        assert checkin._recent_dz(client) == "最近地点"

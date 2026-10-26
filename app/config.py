@@ -91,6 +91,8 @@ class Settings(BaseSettings):
                                            validation_alias="CSU_DK_CRED_FAIL_COOLDOWN")
     checkin_start: str = "18:00"
     checkin_jitter_meters: int = Field(default=50, ge=0, le=300)
+    # 其他类型打卡无历史地点时使用。
+    other_dkdz: str = Field(default="中南大学", validation_alias="CSU_DK_OTHER_DKDZ")
 
     # 仅信任明确配置的代理，由 Uvicorn 解析 XFF。
     trust_proxy: bool = False

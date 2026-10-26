@@ -48,6 +48,7 @@ _CREDENTIAL_ERRORS = (SecretDecryptError, MasterKeyMissingError, MasterKeyInvali
 OK_CODE = "200"
 NO_TASK_CODE = "331"
 BUSINESS_CODES = frozenset({OK_CODE, NO_TASK_CODE})
+AUTH_CODES = frozenset({"401", "403"})
 
 VERIFY_RECHECK_SEC = 30.0
 VERIFY_MAX_ROUNDS = 3
@@ -269,7 +270,7 @@ def verify_login(username: str, password: str, *, entry: str = ENTRY_CREATE,
               account_id=account_id, ip=ip)
     data = {}
     try:
-        response = client.dk_status()
+        response, _ = _query_status(client)
         if str(response.get("code")) == OK_CODE and isinstance(response.get("data"), dict):
             data = response["data"]
     except Exception as error:  # noqa: BLE001 - 时段查询失败不影响已完成的登录验证
@@ -465,27 +466,45 @@ def _save_location(account: dict, name: str, coord: tuple[float, float] | None =
     db.update_account(account["id"], fields)
 
 
-def _base_verdict(client) -> dict:
+def _dklb_for_type(lx) -> str:
+    """留校类型使用 LX，其余使用 PA。"""
+    return "LX" if str(lx or "") == "2" else "PA"
+
+
+def _remember_type(account: dict, data: dict) -> None:
+    """保存学校返回的打卡类型。"""
+    lx = data.get("lx")
+    if lx is None or str(lx) == "":
+        return
+    lx = str(lx)
+    if str(account.get("lx") or "") == lx:
+        return
+    db.update_account(account["id"], {"lx": lx})
+    account["lx"] = lx
+
+
+def _base_verdict(client, dklb: str = "PA") -> dict:
     """补查基准点，获取学校的拒绝原因。"""
     try:
-        return buildings.verdict(client, buildings.base())
+        return buildings.verdict(client, buildings.base(), dklb)
     except ExitUnreachableError:
         raise
     except Exception:  # noqa: BLE001 - 补查失败不覆盖原错误
         return {}
 
 
-def _determine_location(client, account) -> tuple[tuple[float, float] | None, dict, str]:
+def _determine_location(client, account, dklb: str = "PA") -> tuple[tuple[float, float] | None, dict, str]:
     """返回可用坐标、学校判定及来源。"""
     previous = account.get("dkdz") or "未测"
     try:
-        coord, school_name, found, source = buildings.for_student(client, account.get("dkdz") or "")
+        coord, school_name, found, source = buildings.for_student(
+            client, account.get("dkdz") or "", dklb)
     except ExitUnreachableError:
         raise
     except Exception as error:  # noqa: BLE001 - 定位失败时补查学校判定
         log_event("checkin.locate_failed", level="warning", account_id=account["id"],
                   detail=scrub_detail(str(error)))
-        return None, _base_verdict(client), "failed"
+        return None, _base_verdict(client, dklb), "failed"
     if not found.get("canDk"):
         return None, found, source
     if source != "base_accepted":
@@ -497,14 +516,14 @@ def _determine_location(client, account) -> tuple[tuple[float, float] | None, di
 
 
 def _jitter_coord(client: ZhxgClient, account: dict,
-                  coord: tuple[float, float]) -> tuple[float, float]:
+                  coord: tuple[float, float], dklb: str = "PA") -> tuple[float, float]:
     radius = cfg.config.checkin_jitter_meters
     if radius <= 0:
         return coord
     for _ in range(JITTER_ATTEMPTS):
         point = buildings.scatter(coord, radius)
         try:
-            judged = buildings.verdict(client, point)
+            judged = buildings.verdict(client, point, dklb)
         except ExitUnreachableError:
             raise
         except Exception:  # noqa: BLE001 - 失败时使用原坐标
@@ -516,9 +535,10 @@ def _jitter_coord(client: ZhxgClient, account: dict,
     return coord
 
 
-def _read_submit_result(client: ZhxgClient, account_id: int) -> tuple[bool, str | None]:
+def _read_submit_result(client: ZhxgClient, account_id: int,
+                       dklb: str = "PA") -> tuple[bool, str | None]:
     try:
-        response = client.dk_status()
+        response = client.dk_status(dklb=dklb)
     except Exception as error:  # noqa: BLE001 - 查询失败不代表打卡失败
         log_event("checkin.verify_read_failed", level="warning", account_id=account_id,
                   detail=scrub_detail(str(error)))
@@ -534,7 +554,62 @@ def _read_submit_result(client: ZhxgClient, account_id: int) -> tuple[bool, str 
     return False, None
 
 
-def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatus, str, str | None] | None:
+def _other_coord(account: dict) -> tuple[float, float]:
+    """其他类型打卡没有考勤范围，用账号已有坐标或基准点。"""
+    coord = _coords_for(account)
+    if coord is not None:
+        return coord
+    coord = buildings.base()
+    db.update_account(account["id"], {"jd": coord[0], "wd": coord[1],
+                                      "updated_at": to_local_iso(local_now(cfg.config.tz))})
+    account["jd"], account["wd"] = coord
+    return coord
+
+
+def _recent_dz(client: ZhxgClient) -> str:
+    """取本月最近的有效打卡地点。"""
+    try:
+        today = to_local_iso(local_now(cfg.config.tz))[:10]
+        response = client.month_stats(today)
+        if str(response.get("code")) != OK_CODE:
+            return ""
+        rows = (response.get("data") or {}).get("bykq") or []
+        valid = [row for row in rows if isinstance(row, dict) and row.get("dz")
+                 and today[:7] + "-01" <= str(row.get("rq") or "") <= today]
+        return str(max(valid, key=lambda row: row["rq"])["dz"]) if valid else ""
+    except Exception:  # noqa: BLE001 - 历史地点不可用时使用配置值
+        return ""
+
+
+def _submit_other(client: ZhxgClient, account: dict, data: dict,
+                  dklb: str) -> tuple[CheckinStatus, str, str | None] | None:
+    """其他类型使用已有坐标和历史地点提交。"""
+    coord = _other_coord(account)
+    radius = cfg.config.checkin_jitter_meters
+    jd, wd = buildings.scatter(coord, radius) if radius > 0 else coord
+    name = _recent_dz(client) or cfg.config.other_dkdz
+    log_event("checkin.other_type", account_id=account["id"], dkdz=name, radius_m=radius)
+    return _submit_at(client, account, data, dklb, (jd, wd), name)
+
+
+def _submit_at(client: ZhxgClient, account: dict, data: dict, dklb: str,
+               coord: tuple[float, float], name: str) -> tuple[CheckinStatus, str, str | None] | None:
+    try:
+        result = client.submit_dk(jd=coord[0], wd=coord[1], dkbc=data.get("dkbc") or "", dkdz=name)
+    except (requests.RequestException, TimeoutError, ConnectionError, ExitUnreachableError) as error:
+        log_event("checkin.submit_unknown", level="warning", account_id=account["id"],
+                  detail=scrub_detail(str(error)))
+        return None
+    if result.get("code") != OK_CODE:
+        raise RuntimeError(f"提交失败：{result.get('message') or str(result)[:160]}")
+    confirmed, dksj = _read_submit_result(client, account["id"], dklb)
+    if confirmed:
+        return CheckinStatus.SUCCESS, f"打卡成功（{dksj}）", dksj
+    return None
+
+
+def _submit(client: ZhxgClient, account: dict, data: dict,
+            dklb: str = "PA") -> tuple[CheckinStatus, str, str | None] | None:
     if data.get("sfydk"):
         dksj = data.get("dksj")
         return CheckinStatus.SKIPPED, f"今日已打卡（{dksj or '—'}）", dksj
@@ -545,55 +620,86 @@ def _submit(client: ZhxgClient, account: dict, data: dict) -> tuple[CheckinStatu
         status = CheckinStatus.WAITING if _outside_checkin_window(data) else CheckinStatus.FAILED
         return status, f"当前不可打卡：{reason}", None
 
+    lx = str(data.get("lx") or account.get("lx") or "")
+    if lx == "3":
+        return _submit_other(client, account, data, dklb)
+
     cached = _coords_for(account)
-    location = (client.check_location(*cached).get("data") or {}) if cached else {}
+    location = (client.check_location(*cached, dklb=dklb).get("data") or {}) if cached else {}
     coord = cached if cached and location.get("canDk") else None
     save_coord = coord
     if coord is None:
-        coord, measured, source = _determine_location(client, account)
+        coord, measured, source = _determine_location(client, account, dklb)
         if coord is not None or not location:
             location = measured
         # 不将本次可用的基准点经纬度保存为账号位置。
         save_coord = None if source == "base_accepted" else coord
     _save_location(account, location.get("yxMc") or "", save_coord)
     if coord is None or not location.get("canDk"):
+        distance = location.get("pcMi")
         message = (f"位置校验未通过：{location.get('msg') or location.get('reason') or '—'}"
-                   f"（距 {location.get('yxMc') or '?'} {location.get('pcMi') or '?'} 米）")
+                   f"（距 {location.get('yxMc') or '?'} {distance if distance is not None else '?'} 米）")
+        if lx == "2":
+            message += "；留校学生外出时请在学校 App 申请外出打卡"
         return CheckinStatus.FAILED, message, None
 
-    jd, wd = _jitter_coord(client, account, coord)
-    try:
-        result = client.submit_dk(jd=jd, wd=wd, dkbc=data.get("dkbc") or "",
-                                  dkdz=location.get("yxMc") or account.get("dkdz") or "")
-    except (requests.RequestException, TimeoutError, ConnectionError, ExitUnreachableError) as error:
-        log_event("checkin.submit_unknown", level="warning", account_id=account["id"],
-                  detail=scrub_detail(str(error)))
-        return None
-    if result.get("code") != OK_CODE:
-        raise RuntimeError(f"提交失败：{result.get('message') or str(result)[:160]}")
-    confirmed, dksj = _read_submit_result(client, account["id"])
-    if confirmed:
-        return CheckinStatus.SUCCESS, f"打卡成功（{dksj}）", dksj
-    return None
+    coord = _jitter_coord(client, account, coord, dklb)
+    name = location.get("yxMc") or account.get("dkdz") or ""
+    return _submit_at(client, account, data, dklb, coord, name)
 
 
-def _business_status(account: dict) -> tuple[ZhxgClient, dict, str]:
+def _query_status(client: ZhxgClient, dklb: str = "PA",
+                  account: dict | None = None) -> tuple[dict, str]:
+    """按班次查询；类型变化时改用新班次，401/403 交给调用方重登。"""
+    response = client.dk_status(dklb=dklb)
+    code = str(response.get("code") or "")
+    if code in AUTH_CODES:
+        return response, dklb
+    data = response.get("data") or {}
+    lx = str(data.get("lx") or "")
+    if lx and account is not None:
+        _remember_type(account, data)
+    expected = _dklb_for_type(lx) if lx else dklb
+    if expected != dklb:
+        # 已确认类型变化：必须用新班次，失败也不回退旧班次。
+        return client.dk_status(dklb=expected), expected
+    if code not in BUSINESS_CODES:
+        alternate = "LX" if dklb == "PA" else "PA"
+        fallback = client.dk_status(dklb=alternate)
+        fallback_code = str(fallback.get("code") or "")
+        # 备用班次的登录失败也要交给调用方重登，不能退回原响应。
+        if fallback_code in BUSINESS_CODES or fallback_code in AUTH_CODES:
+            return fallback, alternate
+    return response, dklb
+
+
+def _business_status(account: dict) -> tuple[ZhxgClient, dict, str, str]:
     client = build_client(account)
+    dklb = _dklb_for_type(account.get("lx"))
+
+    def login() -> ZhxgClient:
+        try:
+            return _login(account, entry=ENTRY_CHECKIN)
+        except (LoginPausedError, CasIpFrozenError, RateLimitError, ExitUnreachableError):
+            raise
+        except Exception as error:
+            mark_auth_failure(account["id"], error, str(error))
+            raise
+
+    if not has_fresh_login(account) or not client.token:
+        client = login()
     response: dict = {}
-    for force in (False, True):
-        if force or not has_fresh_login(account) or not client.token:
-            try:
-                client = _login(account, entry=ENTRY_CHECKIN)
-            except (LoginPausedError, CasIpFrozenError, RateLimitError, ExitUnreachableError):
-                raise
-            except Exception as error:
-                mark_auth_failure(account["id"], error, str(error))
-                raise
-        response = client.dk_status()
+    for attempt in range(2):
+        response, dklb = _query_status(client, dklb, account)
         code = str(response.get("code") or "")
         if code in BUSINESS_CODES:
-            return client, response, code
-    return client, response, str(response.get("code") or "")
+            _remember_type(account, response.get("data") or {})
+            return client, response, code, dklb
+        if code not in AUTH_CODES or attempt == 1:
+            break
+        # 只有登录态失效才重登，普通 500 不消耗登录次数。
+        client = login()
+    return client, response, str(response.get("code") or ""), dklb
 
 
 def _settled_today(account: dict, run_at: str) -> bool:
@@ -620,11 +726,12 @@ def _recheck_at(after_seconds: float) -> str:
     return to_local_iso(local_now(cfg.config.tz) + timedelta(seconds=after_seconds))
 
 
-def _defer_verification(account: dict, run_at: str, trigger: str) -> CheckinResult:
+def _defer_verification(account: dict, run_at: str, trigger: str,
+                        dklb: str = "PA") -> CheckinResult:
     db.upsert_verification(account["id"], run_at, trigger,
-                           _recheck_at(VERIFY_RECHECK_SEC), run_at)
+                           _recheck_at(VERIFY_RECHECK_SEC), run_at, dklb)
     log_event("checkin.verify_deferred", level="warning", account_id=account["id"],
-              round=1, due_in=VERIFY_RECHECK_SEC)
+              round=1, due_in=VERIFY_RECHECK_SEC, dklb=dklb)
     return {"status": CheckinStatus.WAITING, "message": "已提交打卡，等待学校确认",
             "dksj": None, "deferred": True}
 
@@ -651,8 +758,9 @@ def _resolve_verification_body(account: dict) -> CheckinResult | None:
         return None
 
     detail = ""
+    dklb = str(task.get("dklb") or _dklb_for_type(account.get("lx")))
     try:
-        response = client.dk_status()
+        response = client.dk_status(dklb=dklb)
     except Exception as error:  # noqa: BLE001 - 查询失败不代表打卡失败
         response, detail = {}, scrub_detail(str(error))
     code = str(response.get("code") or "")
@@ -670,7 +778,7 @@ def _resolve_verification_body(account: dict) -> CheckinResult | None:
     else:
         db.bump_verification(account["id"], _recheck_at(VERIFY_RECHECK_SEC))
         log_event("checkin.verify_deferred", level="warning", account_id=account["id"],
-                  round=rounds + 1, due_in=VERIFY_RECHECK_SEC, detail=detail)
+                  round=rounds + 1, due_in=VERIFY_RECHECK_SEC, dklb=dklb, detail=detail)
         return None
 
     message = scrub_detail(message)
@@ -678,7 +786,7 @@ def _resolve_verification_body(account: dict) -> CheckinResult | None:
         _record(account, run_at, task["trigger"], status, message, dksj)
         forget_verification(account["id"])
     log_event("checkin.verify_resolved", account_id=account["id"], status=status,
-              rounds=rounds, detail=detail)
+              rounds=rounds, dklb=dklb, detail=detail)
     return {"status": status, "message": message, "dksj": dksj}
 
 
@@ -733,7 +841,7 @@ def _attempt(account: AccountRow | dict, trigger: str) -> CheckinResult:
         if trigger != Trigger.MANUAL and not account.get("enabled"):
             raise RuntimeError("账号已停用")
 
-        client, response, code = _business_status(account)
+        client, response, code, dklb = _business_status(account)
         data = response.get("data") or {}
         if code == NO_TASK_CODE:
             status = CheckinStatus.NO_TASK
@@ -743,9 +851,9 @@ def _attempt(account: AccountRow | dict, trigger: str) -> CheckinResult:
         else:
             _save_checkin_window(account, data)
             persist_state(account["id"], client)
-            outcome = _submit(client, account, data)
+            outcome = _submit(client, account, data, dklb)
             if outcome is None:
-                return _defer_verification(account, run_at, trigger)
+                return _defer_verification(account, run_at, trigger, dklb)
             status, message, dksj = outcome
     except ExitUnreachableError:
         raise

@@ -121,21 +121,24 @@ def test_message_lives_inside_the_swapped_panel(client):
 
 
 def test_donate_page_is_public(client, monkeypatch):
+    from bs4 import BeautifulSoup
+
     from app import ui
 
     original = Path.read_text
 
     def read_text(path, *args, **kwargs):
         if path.name == "donors.json":
-            return '[{"order":"2026101512345","remark":"","amount":"CNY 5"}]'
+            return '[{"order":"2026101512345","remark":"","amount":"5.00"}]'
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", read_text)
-    assert ui._donors() == [{"order": "01512345", "remark": "", "amount": "CNY 5"}]
+    assert ui._donors() == [{"order": "01512345", "remark": "", "name": "", "amount": "5.00"}]
     html = client.get("/donate").text
-    assert "谢谢!" in html
-    assert "转账单号" in html and "留言" in html and "金额" in html
-    assert "*01512345" in html and "2026101512345" not in html
+    assert "赞赏记录" in html
+    assert "单号" in html and "留言" in html and "金额" in html
+    assert BeautifulSoup(html, "html.parser").select_one(".donors td.mono").get_text() == "*01512345"
+    assert "2026101512345" not in html
     assert "匿名" not in html
 
 

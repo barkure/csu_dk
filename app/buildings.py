@@ -134,9 +134,9 @@ def learn(school_name: str, coord: tuple[float, float]) -> None:
                   distance_m=round(distance(previous, coord)))
 
 
-def verdict(client, point: tuple[float, float]) -> dict:
+def verdict(client, point: tuple[float, float], dklb: str = "PA") -> dict:
     """查询学校对坐标的判定；可用的坐标不一定带距离。"""
-    body = client.check_location(point[0], point[1])
+    body = client.check_location(point[0], point[1], dklb=dklb)
     data = body.get("data") if str(body.get("code")) == "200" else None
     if not isinstance(data, dict):
         raise UpstreamError("学校接口没有返回定位判定，请稍后重试")
@@ -144,9 +144,9 @@ def verdict(client, point: tuple[float, float]) -> dict:
     return data
 
 
-def check(client, point: tuple[float, float]) -> dict:
+def check(client, point: tuple[float, float], dklb: str = "PA") -> dict:
     """探点用：必须带距离，否则三点交会解不出坐标。"""
-    data = verdict(client, point)
+    data = verdict(client, point, dklb)
     if data.get("pcMi") is None:
         raise UpstreamError("学校接口没有返回定位距离，请稍后重试")
     return data
@@ -203,7 +203,7 @@ def _solve(points, dists) -> tuple[float, float]:
 
 
 def locate(client, start: tuple[float, float], *,
-           radius: float = PROBE_RADIUS_M) -> tuple[tuple[float, float], str]:
+           radius: float = PROBE_RADIUS_M, dklb: str = "PA") -> tuple[tuple[float, float], str]:
     """通过三点测距和一次验证定位申报点。"""
     base_point, current = start, radius
     for _ in range(LOCATE_ATTEMPTS):
@@ -211,10 +211,10 @@ def locate(client, start: tuple[float, float], *,
         for bearing in PROBE_BEARINGS:
             angle = math.radians(bearing)
             point = shift(base_point, current * math.sin(angle), current * math.cos(angle))
-            dists.append(float(check(client, point)["pcMi"]))
+            dists.append(float(check(client, point, dklb)["pcMi"]))
             points.append(point)
         guess = _solve(points, dists)
-        verified = check(client, guess)
+        verified = check(client, guess, dklb)
         if float(verified["pcMi"]) <= VERIFY_MAX_M:
             return guess, str(verified.get("yxMc") or "")
         base_point = guess
@@ -222,18 +222,18 @@ def locate(client, start: tuple[float, float], *,
     raise UpstreamError("没能测定这个地址的位置，请稍后重试")
 
 
-def for_student(client, name: str = "") -> tuple[tuple[float, float], str, dict, str]:
+def for_student(client, name: str = "", dklb: str = "PA") -> tuple[tuple[float, float], str, dict, str]:
     """返回经学校验证的坐标及其来源。"""
     school_name = (name or "").strip()
     has_name = bool(school_name)
     if school_name:
         cached = resolve(school_name)
         if cached is not None:
-            found = verdict(client, cached)
+            found = verdict(client, cached, dklb)
             if found.get("canDk"):
                 return cached, school_name, found, "cache"
 
-    probe = verdict(client, base())
+    probe = verdict(client, base(), dklb)
     if not school_name:
         school_name = str(probe.get("yxMc") or "")
     if probe.get("canDk") and probe.get("pcMi") is None:
@@ -241,9 +241,9 @@ def for_student(client, name: str = "") -> tuple[tuple[float, float], str, dict,
     if not has_name:
         cached = resolve(school_name)
         if cached is not None:
-            found = verdict(client, cached)
+            found = verdict(client, cached, dklb)
             if found.get("canDk"):
                 return cached, school_name, found, "cache"
-    coord, measured = locate(client, base())
+    coord, measured = locate(client, base(), dklb=dklb)
     learn(measured or school_name, coord)
-    return coord, measured or school_name, check(client, coord), "located"
+    return coord, measured or school_name, check(client, coord, dklb), "located"

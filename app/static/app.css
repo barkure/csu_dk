@@ -214,26 +214,28 @@ button.plain.danger:active:not(:disabled) { background: none; color: var(--dange
 .card.login > .muted { margin: 0 0 22px; font-size: 13px; }
 .card.login .msg { margin-top: 16px; }
 
-body.donate {
-  font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
-}
-header.page-title { justify-content: center; }
-header.page-title h1 {
-  padding-left: 0; font-size: 28px;
-  letter-spacing: 0; text-transform: none;
-  transition: opacity .4s ease;
-}
-.donors { max-width: 1040px; margin: 0 auto 22px; font-size: 15px; }
+.donors { max-width: 1040px; margin: 32px auto 22px; font-size: 15px; }
+.donors-title { margin: 0 0 24px; text-align: center; }
 .donors-empty { text-align: center; }
-.donors table { width: auto; margin: 0 auto; font-size: 15px; }
-.donors th, .donors td { padding: 8px 24px; border-bottom: 0; font-size: inherit; }
-.donors th { color: var(--muted); font-weight: normal; text-align: center; }
+.donors .table-wrap { width: fit-content; max-width: 100%; margin: 0 auto; }
+.donors table {
+  width: auto; margin: 0 auto; font-size: 15px;
+  border-top: 1.5px solid var(--hair); border-bottom: 1.5px solid var(--hair);
+}
+.donors thead { border-bottom: 1px solid var(--hair); }
+.donors th, .donors td { padding: 8px 32px; border-bottom: 0; font-size: inherit; }
+.donors th { color: var(--ink); font-weight: normal; text-align: center; }
 .donors td { white-space: nowrap; }
-.donors td:first-child { text-align: left; color: var(--ink); }
-.donors td:nth-child(2) { white-space: normal; overflow-wrap: anywhere; }
-.donors td:last-child { text-align: left; }
-.donors td:last-child { color: var(--muted); }
+.donors td.donor-order { text-align: left; color: var(--muted); }
+.donors .donor-remark { text-align: center; white-space: normal; overflow-wrap: anywhere; }
+.donors .donor-name { text-align: center; }
+.donors .donor-amount { text-align: center; }
+.donors td.donor-amount { color: var(--muted); }
 
+@media (min-width: 721px) {
+  .donors th:first-child, .donors td:first-child { padding-left: 16px; }
+  .donors th:last-child, .donors td:last-child { padding-right: 16px; }
+}
 
 
 
@@ -270,11 +272,17 @@ header.page-title h1 {
 @media (max-width: 720px) {
   .site-footer { flex-direction: column; gap: 12px; text-align: center; }
   .footer-credit { white-space: nowrap; }
-  .donors { padding: 0 12px; }
-  .donors table { width: 100%; }
-  .donors th, .donors td { padding-left: 8px; padding-right: 8px; }
+  body.donate { padding-left: 16px; padding-right: 16px; }
+  .donors .table-wrap { width: 100%; }
+  .donors table { width: 100%; table-layout: fixed; }
+  .donors th, .donors td { padding-left: 4px; padding-right: 4px; }
   .donors th { white-space: nowrap; }
-  .donors td:nth-child(2) { width: 100%; }
+  .donors .donor-name, .donors .donor-amount { width: calc(5em + 8px); }
+  .donors .donor-order { display: none; }
+  .donor-name-text {
+    display: block; width: 5em;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
 
   header { margin-bottom: 26px; }
 

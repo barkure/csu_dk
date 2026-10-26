@@ -48,13 +48,15 @@ def _session_fields(probe: dict | None) -> dict:
     session = (probe or {}).get("session") or {}
     if not session.get("token"):
         return {}
-    window = parse_window(((probe or {}).get("data") or {}).get("dksjfw"))
+    data = (probe or {}).get("data") or {}
+    window = parse_window(data.get("dksjfw"))
     fields = {
         "token": session["token"],
         "casual": session["casual"],
         "cookies": session["cookies"],
         "token_at": _now_iso(),
         "auth_error": "",
+        "lx": str(data.get("lx") or ""),
     }
     if window:
         fields.update(checkin_start=window[0], checkin_end=window[1])

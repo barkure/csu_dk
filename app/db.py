@@ -43,10 +43,14 @@ def transaction() -> Iterator[None]:
 
 _SCHEMA = (pathlib.Path(__file__).with_name("schema.sql")).read_text()
 _ADDITIVE_TABLES = frozenset({"verifications", "credential_notices", "schedule_notices"})
-# 仅自动补齐白名单字段。
-_ADDITIVE_COLUMNS = frozenset({
-    ("accounts", "checkin_start"), ("accounts", "checkin_end"), ("accounts", "not_before"),
-})
+# 允许自动迁移的字段及其定义；键同时充当白名单。
+_ADDITIVE_COLUMN_DDL = {
+    ("accounts", "checkin_start"): "TEXT",
+    ("accounts", "checkin_end"): "TEXT",
+    ("accounts", "not_before"): "TEXT",
+    ("accounts", "lx"): "TEXT NOT NULL DEFAULT ''",
+    ("verifications", "dklb"): "TEXT NOT NULL DEFAULT 'PA'",
+}
 
 
 def _structure(conn: sqlite3.Connection) -> dict[str, set[str]]:
@@ -79,13 +83,33 @@ def _reference_structure() -> dict[str, set[str]]:
 
 
 def _is_additive_column(item: str) -> bool:
-    return tuple(item.split(".", 1)) in _ADDITIVE_COLUMNS
+    return tuple(item.split(".", 1)) in _ADDITIVE_COLUMN_DDL
 
 
 def _add_columns(conn: sqlite3.Connection, items: list[str]) -> None:
     for item in items:
         table, column = item.split(".", 1)
-        conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" TEXT')
+        conn.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" '
+                     f'{_ADDITIVE_COLUMN_DDL[(table, column)]}')
+
+
+def _normalize_lx(conn: sqlite3.Connection) -> None:
+    column = next(row for row in conn.execute("PRAGMA table_info(accounts)") if row[1] == "lx")
+    if tuple(column[2:5]) == ("TEXT", 1, "''"):
+        return
+    # 修正早期可空的 lx 列，保留已识别的类型。
+    conn.execute("SAVEPOINT normalize_lx")
+    try:
+        conn.execute("CREATE TEMP TABLE saved_lx AS SELECT id, coalesce(lx, '') AS lx FROM accounts")
+        conn.execute("ALTER TABLE accounts DROP COLUMN lx")
+        conn.execute("ALTER TABLE accounts ADD COLUMN lx TEXT NOT NULL DEFAULT ''")
+        conn.execute("UPDATE accounts SET lx = (SELECT lx FROM saved_lx WHERE saved_lx.id = accounts.id)")
+        conn.execute("DROP TABLE saved_lx")
+    except BaseException:
+        conn.execute("ROLLBACK TO normalize_lx")
+        raise
+    finally:
+        conn.execute("RELEASE normalize_lx")
 
 
 def _ensure_schema(conn: sqlite3.Connection | None = None) -> None:
@@ -113,6 +137,7 @@ def _ensure_schema(conn: sqlite3.Connection | None = None) -> None:
         _add_columns(conn, additive)
 
     conn.executescript(_SCHEMA)
+    _normalize_lx(conn)
 
 
 _ensure_schema()
@@ -122,7 +147,7 @@ _UPDATABLE = {
     "password_enc", "enabled", "jd", "wd", "dkdz",
     "casual", "token", "cookies", "token_at",
     "last_run_at", "last_status", "last_message", "auth_error", "updated_at",
-    "checkin_start", "checkin_end", "not_before",
+    "checkin_start", "checkin_end", "not_before", "lx",
 }
 
 
@@ -249,14 +274,15 @@ def purge_old_records(cutoff_iso: str) -> int:
 
 
 def upsert_verification(account_id: int, run_at: str, trigger: str, next_at: str,
-                        created_at: str) -> None:
+                        created_at: str, dklb: str = "PA") -> None:
     _exec(
-        """INSERT INTO verifications (account_id, run_at, trigger, next_at, rounds, created_at)
-           VALUES (?, ?, ?, ?, 0, ?)
+        """INSERT INTO verifications (account_id, run_at, trigger, next_at, rounds, dklb, created_at)
+           VALUES (?, ?, ?, ?, 0, ?, ?)
            ON CONFLICT(account_id) DO UPDATE SET
              run_at = excluded.run_at, trigger = excluded.trigger,
-             next_at = excluded.next_at, rounds = 0, created_at = excluded.created_at""",
-        (account_id, run_at, trigger, next_at, created_at),
+             next_at = excluded.next_at, rounds = 0, dklb = excluded.dklb,
+             created_at = excluded.created_at""",
+        (account_id, run_at, trigger, next_at, dklb, created_at),
     )
 
 
@@ -396,16 +422,16 @@ def set_auth_error(account_id: int, kind: AuthError | str) -> bool:
 def insert_account(row: dict) -> dict | None:
     payload = {"token": "", "casual": None, "cookies": None, "token_at": None,
                "checkin_start": None, "checkin_end": None, "not_before": None,
-               "auth_error": "", "dkdz": "", "jd": None, "wd": None}
+               "auth_error": "", "dkdz": "", "jd": None, "wd": None, "lx": ""}
     payload.update(row)
     payload = _seal(payload)
     _exec(
         """INSERT INTO accounts (user_id, csu_username, password_enc, enabled,
                                  jd, wd, dkdz, token, casual, cookies, token_at, auth_error,
-                                 created_at, updated_at, checkin_start, checkin_end, not_before)
+                                 created_at, updated_at, checkin_start, checkin_end, not_before, lx)
            VALUES (:user_id, :csu_username, :password_enc, :enabled,
                    :jd, :wd, :dkdz, :token, :casual, :cookies, :token_at, :auth_error,
-                   :created_at, :updated_at, :checkin_start, :checkin_end, :not_before)""",
+                   :created_at, :updated_at, :checkin_start, :checkin_end, :not_before, :lx)""",
         payload,
     )
     return get_account_by_username(row["user_id"], row["csu_username"])

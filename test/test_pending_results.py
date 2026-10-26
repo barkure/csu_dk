@@ -34,7 +34,7 @@ def account():
 
 
 def test_disabled_account_finishes_manual_verification(account, monkeypatch):
-    school = SimpleNamespace(token="test-token", dk_status=lambda: {
+    school = SimpleNamespace(token="test-token", dk_status=lambda dklb="PA": {
         "code": "200", "data": {"sfydk": 1, "dksj": "2026-10-02 20:00:00"},
     })
     monkeypatch.setattr(checkin, "build_client", lambda _account: school)

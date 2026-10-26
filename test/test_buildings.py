@@ -20,7 +20,7 @@ class FakeSchool:
     def __init__(self, target=(112.935978, 28.158930), name="升华24栋", can_dk=True):
         self.target, self.name, self.can_dk, self.calls = target, name, can_dk, 0
 
-    def check_location(self, jd, wd):
+    def check_location(self, jd, wd, dklb="PA"):
         self.calls += 1
         d = round(haversine((jd, wd), self.target))
         return {"code": "200", "data": {"pcMi": d, "yxMc": self.name,
@@ -141,7 +141,7 @@ class TestLocate:
 
     def test_raises_when_location_api_is_broken(self):
         class Broken:
-            def check_location(self, jd, wd):
+            def check_location(self, jd, wd, dklb="PA"):
                 return {"code": "500", "data": None}
 
         with pytest.raises(UpstreamError):
@@ -164,7 +164,7 @@ class TestForStudent:
             def __init__(self):
                 self.calls = []
 
-            def check_location(self, jd, wd):
+            def check_location(self, jd, wd, dklb="PA"):
                 self.calls.append((jd, wd))
                 if (jd, wd) != cached:
                     raise UpstreamError("基准点查询失败")
@@ -201,7 +201,7 @@ class TestForStudent:
 
     def test_accepted_base_point_needs_no_distance(self):
         class BaseAccepted:
-            def check_location(self, jd, wd):
+            def check_location(self, jd, wd, dklb="PA"):
                 return {"code": "200", "data": {"canDk": True, "bxwz": 1}}
 
         coord, name, verdict, source = buildings.for_student(BaseAccepted())
@@ -220,7 +220,7 @@ class TestVerdict:
         def __init__(self, data):
             self.data = data
 
-        def check_location(self, jd, wd):
+        def check_location(self, jd, wd, dklb="PA"):
             return {"code": "200", "data": self.data}
 
     def test_verdict_does_not_require_distance(self):

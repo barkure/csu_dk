@@ -1,28 +1,22 @@
 {% extends "base.html" %}
-{% block title %}谢谢! · 妙妙道具{% endblock %}
+{% block title %}赞赏记录 · 妙妙道具{% endblock %}
 {% block body_class %}donate{% endblock %}
-{% block head %}
-<link rel="preconnect" href="https://fonts.googleapis.cn">
-<link rel="preconnect" href="https://fonts.gstatic.cn" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.cn/css2?family=Noto+Serif+SC:wght@400;700&display=swap">
-{% endblock %}
 {% block content %}
-<header class="page-title">
-  <h1 id="thanks">谢谢!</h1>
-</header>
 <section class="donors">
+  <h1 class="donors-title">赞赏记录</h1>
   {% if donors %}
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>转账单号</th><th>留言</th><th>金额</th></tr>
+        <tr><th class="donor-order">转账单号</th><th class="donor-name">来自</th><th>留言</th><th class="donor-amount">金额（¥）</th></tr>
       </thead>
       <tbody>
       {% for donor in donors %}
         <tr>
-          <td>{{ '*' ~ donor.order if donor.order else '' }}</td>
-          <td>{{ donor.remark or '-' }}</td>
-          <td>{{ donor.amount }}</td>
+          <td class="mono donor-order">{{ '*' ~ donor.order if donor.order else '-' }}</td>
+          <td class="donor-name"><span class="donor-name-text">{{ donor.name or '-' }}</span></td>
+          <td class="donor-remark">{{ donor.remark or '-' }}</td>
+          <td class="mono donor-amount">{{ donor.amount }}</td>
         </tr>
       {% endfor %}
       </tbody>
@@ -32,6 +26,5 @@
   <p class="muted donors-empty">暂无捐赠者</p>
   {% endif %}
 </section>
-<script src="/static/donate.js"></script>
 {% endblock %}
 {% block footer %}{% endblock %}

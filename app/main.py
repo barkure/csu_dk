@@ -72,6 +72,7 @@ def _public_account(account: dict) -> dict:
         "enabled": bool(account["enabled"]),
         "notBefore": account.get("not_before"),
         "needsReauth": bool(account["auth_error"]),
+        "lx": account.get("lx") or "",
         "dkdz": account["dkdz"] or "",
         "online": has_fresh_login(account),
         "verifying": is_verifying(account["id"]),

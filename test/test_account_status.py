@@ -233,7 +233,7 @@ def test_checkin_stage_failure_does_not_touch_status(user, monkeypatch):
         def cookies_json(self) -> str:
             return "[]"
 
-        def dk_status(self):
+        def dk_status(self, dklb="PA"):
             return {"code": "200", "data": {"sfydk": False, "kdk": True, "dksj": None}}
 
         def check_location(self, *_a, **_k):
@@ -406,7 +406,7 @@ def test_checkin_stage_exception_does_not_flag_account(user, monkeypatch):
         def cookies_json(self) -> str:
             return "[]"
 
-        def dk_status(self):
+        def dk_status(self, dklb="PA"):
             raise RuntimeError("业务接口返回异常：{'message': '账号已被锁定，请联系学校'}")
 
     monkeypatch.setattr(engine, "build_client", lambda _account: FakeZhxg())

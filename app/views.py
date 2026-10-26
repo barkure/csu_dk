@@ -4,7 +4,7 @@ from __future__ import annotations
 from . import config as cfg
 from .clock import local_now, to_local_iso
 from .domain import AuthError, CheckinStatus
-from .validate import account_checkin_window, before_account_start, to_minutes
+from .validate import account_checkin_window, account_window_state, to_minutes
 
 STATUS_TEXT = {
     CheckinStatus.SUCCESS: "打卡成功", CheckinStatus.SKIPPED: "已打过卡",
@@ -66,14 +66,7 @@ def today_result(account: dict, *, verifying: bool = False) -> dict:
 
 
 def _account_window_state(account: dict) -> str:
-    window = account_checkin_window(account)
-    state = window_state(*window) if window else "inside"
-    if state == "after":
-        return state
-    if (to_minutes(_now()[1]) < to_minutes(cfg.config.checkin_start)
-            or before_account_start(account, _now()[1])):
-        return "before"
-    return state
+    return account_window_state(account, _now()[1], cfg.config.checkin_start)
 
 
 AUTH_STATUS = {

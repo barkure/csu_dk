@@ -57,6 +57,24 @@ def before_account_start(account: dict, time: str) -> bool:
         return False
 
 
+def account_window_state(account: dict, time: str, checkin_start: str) -> str:
+    """合并学校时段、全局开始时间和账号设置。"""
+    current = to_minutes(time)
+    window = account_checkin_window(account)
+    if window:
+        start, end = map(to_minutes, window)
+        if start <= end:
+            if current > end:
+                return "after"
+            if current < start:
+                return "before"
+        elif end < current < start:
+            return "before"
+    if current < to_minutes(checkin_start) or before_account_start(account, time):
+        return "before"
+    return "inside"
+
+
 def not_before_error(account: dict) -> str:
     window = account_checkin_window(account)
     value = account.get("not_before")

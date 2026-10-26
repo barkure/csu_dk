@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL,
   auth_error    TEXT NOT NULL DEFAULT '',
+  lx            TEXT NOT NULL DEFAULT '',
   checkin_start      TEXT,
   checkin_end        TEXT,
   not_before        TEXT,
@@ -46,6 +47,7 @@ CREATE TABLE IF NOT EXISTS verifications (
   trigger    TEXT NOT NULL,
   next_at    TEXT NOT NULL,
   rounds     INTEGER NOT NULL DEFAULT 0,
+  dklb       TEXT NOT NULL DEFAULT 'PA',
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scheduler_lease (
